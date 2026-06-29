@@ -1,0 +1,9 @@
+{
+  "pillars": [
+    { "pillar": "Identify",  "weight": 0.9, "notes": "Pattern interrupts + science hooks — highest scroll-stopping power" },
+    { "pillar": "Reprogram", "weight": 0.8, "notes": "Method / interrupt hooks — high share + save rate" },
+    { "pillar": "Integrate", "weight": 0.7, "notes": "Identity + community — high DM rate, drives Skool joins" },
+    { "pillar": "Stabilise", "weight": 0.85, "notes": "Proof + science + gut — highest conversion to paid" }
+  ]
+}
+
