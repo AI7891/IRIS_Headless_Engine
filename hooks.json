@@ -1,0 +1,275 @@
+{
+  "hooks": [
+    {
+      "id": "pattern-interrupt-immune-orders",
+      "category": "pattern-interrupt",
+      "primaryPillar": "Identify",
+      "secondaryPillars": ["Reprogram"],
+      "text": "Your immune system isn't broken. It's following orders from a wound you haven't found yet.",
+      "bestFor": ["instagram", "tiktok"],
+      "score": 95
+    },
+    {
+      "id": "pattern-interrupt-dermatologist",
+      "category": "pattern-interrupt",
+      "primaryPillar": "Identify",
+      "secondaryPillars": [],
+      "text": "Every dermatologist looked at my skin. Not one asked what happened to me.",
+      "bestFor": ["instagram", "tiktok"],
+      "score": 90
+    },
+    {
+      "id": "pattern-interrupt-dots-back",
+      "category": "proof",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": ["Integrate"],
+      "text": "The dots are coming back. Here's what changed — and it wasn't a cream.",
+      "bestFor": ["instagram", "tiktok", "youtube"],
+      "score": 98
+    },
+    {
+      "id": "pattern-interrupt-56-percent",
+      "category": "science",
+      "primaryPillar": "Identify",
+      "secondaryPillars": [],
+      "text": "56% of vitiligo patients had a major trauma in the 2 years before onset. Mine did too.",
+      "bestFor": ["instagram", "facebook", "youtube"],
+      "score": 88
+    },
+    {
+      "id": "pattern-interrupt-skin-reading",
+      "category": "pattern-interrupt",
+      "primaryPillar": "Identify",
+      "secondaryPillars": [],
+      "text": "Your skin is not attacking itself. Your skin is reading yourself — and reflecting what it finds.",
+      "bestFor": ["instagram", "tiktok"],
+      "score": 92
+    },
+    {
+      "id": "pattern-interrupt-ask-why",
+      "category": "method",
+      "primaryPillar": "Reprogram",
+      "secondaryPillars": ["Integrate"],
+      "text": "I asked my body WHY it was erasing its own colour. The answer changed everything.",
+      "bestFor": ["instagram", "tiktok", "facebook"],
+      "score": 94
+    },
+    {
+      "id": "science-cortisol-melanocytes",
+      "category": "science",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": ["Reprogram"],
+      "text": "Cortisol destroys melanocytes. Trauma lives in cortisol. Your skin is a stress readout.",
+      "bestFor": ["instagram", "youtube", "facebook"],
+      "score": 96
+    },
+    {
+      "id": "science-gut-serotonin",
+      "category": "science",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": [],
+      "text": "The gut produces 95% of your serotonin. Vitiligo and gut inflammation share the same immune pathway.",
+      "bestFor": ["youtube", "facebook", "instagram"],
+      "score": 85
+    },
+    {
+      "id": "science-hpa-axis",
+      "category": "science",
+      "primaryPillar": "Reprogram",
+      "secondaryPillars": ["Stabilise"],
+      "text": "The HPA axis directly suppresses melanocyte function. Regulate the axis, change the skin.",
+      "bestFor": ["youtube", "facebook"],
+      "score": 82
+    },
+    {
+      "id": "science-oxidative-stress",
+      "category": "science",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": [],
+      "text": "Oxidative stress is the biological bridge between emotional trauma and skin depigmentation.",
+      "bestFor": ["youtube", "facebook"],
+      "score": 78
+    },
+    {
+      "id": "science-nervous-system-modes",
+      "category": "science",
+      "primaryPillar": "Reprogram",
+      "secondaryPillars": [],
+      "text": "Your nervous system has two modes: survive or repair. Repigmentation happens in repair mode.",
+      "bestFor": ["instagram", "tiktok"],
+      "score": 90
+    },
+    {
+      "id": "identity-family-broke",
+      "category": "identity",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "My family broke apart and so did the colour in my skin. The body keeps the score visibly.",
+      "bestFor": ["instagram", "tiktok"],
+      "score": 89
+    },
+    {
+      "id": "identity-skin-trying-to-fix",
+      "category": "identity",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "I spent years trying to fix my skin. The day I started integrating my rejected self — the dots came back.",
+      "bestFor": ["instagram", "tiktok", "youtube"],
+      "score": 93
+    },
+    {
+      "id": "identity-vitiligo-taught",
+      "category": "identity",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "Vitiligo taught me that the parts of myself I hid from the world were the parts my body stopped protecting.",
+      "bestFor": ["instagram", "facebook"],
+      "score": 87
+    },
+    {
+      "id": "identity-confusion",
+      "category": "identity",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "Identity confusion lives underneath depigmentation. When I found myself again, my skin found its colour.",
+      "bestFor": ["instagram", "youtube"],
+      "score": 84
+    },
+    {
+      "id": "identity-child-rejected",
+      "category": "identity",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "The child who was rejected learned to make themselves invisible. The skin just took notes.",
+      "bestFor": ["tiktok", "instagram"],
+      "score": 91
+    },
+    {
+      "id": "method-body-computer",
+      "category": "method",
+      "primaryPillar": "Identify",
+      "secondaryPillars": ["Reprogram", "Integrate", "Stabilise"],
+      "text": "I treat the body like a computer. Vitiligo is an output. The IRIS Method finds the corrupted file.",
+      "bestFor": ["youtube", "facebook", "instagram"],
+      "score": 97
+    },
+    {
+      "id": "method-why-interrupt",
+      "category": "method",
+      "primaryPillar": "Reprogram",
+      "secondaryPillars": [],
+      "text": "When a trigger fires, I don't react. I ask WHY. That one question pauses the entire nervous system.",
+      "bestFor": ["instagram", "tiktok", "youtube"],
+      "score": 92
+    },
+    {
+      "id": "method-somatic-scan",
+      "category": "method",
+      "primaryPillar": "Identify",
+      "secondaryPillars": [],
+      "text": "Somatic scanning taught me to locate my trauma in my body before my mind even knew it was there.",
+      "bestFor": ["youtube", "instagram"],
+      "score": 80
+    },
+    {
+      "id": "method-parts-work",
+      "category": "method",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "Parts work means having a conversation with the part of you that learned to disappear.",
+      "bestFor": ["instagram", "facebook"],
+      "score": 83
+    },
+    {
+      "id": "method-gut-first",
+      "category": "method",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": [],
+      "text": "The gut heals first — because a dysregulated gut cannot hold the emotional work.",
+      "bestFor": ["youtube", "facebook"],
+      "score": 79
+    },
+    {
+      "id": "community-built-for",
+      "category": "community",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "I built a community for people whose skin brought them here but whose healing goes much deeper.",
+      "bestFor": ["instagram", "facebook"],
+      "score": 81
+    },
+    {
+      "id": "community-tried-separately",
+      "category": "community",
+      "primaryPillar": "Reprogram",
+      "secondaryPillars": ["Stabilise"],
+      "text": "If you've tried every cream, every diet, every therapy separately — you haven't tried running them all as one integrated system.",
+      "bestFor": ["instagram", "facebook", "youtube"],
+      "score": 86
+    },
+    {
+      "id": "community-not-support-group",
+      "category": "community",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "The Inner Shift Lab is not a support group. It's a reprogramming lab. There's a difference.",
+      "bestFor": ["instagram", "facebook"],
+      "score": 78
+    },
+    {
+      "id": "community-ready-look",
+      "category": "community",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "You don't need to be further along in your healing to join. You just need to be ready to look at the root.",
+      "bestFor": ["instagram", "facebook"],
+      "score": 75
+    },
+    {
+      "id": "proof-week-6",
+      "category": "proof",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": ["Integrate"],
+      "text": "Week 6 update: three new patches showing repigmentation dots. This is the integrated system in real time.",
+      "bestFor": ["instagram", "tiktok", "youtube"],
+      "score": 99
+    },
+    {
+      "id": "proof-member-posted",
+      "category": "proof",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": ["Stabilise"],
+      "text": "A member just posted her first repigmentation photo in the community. This is why I built this.",
+      "bestFor": ["instagram", "tiktok"],
+      "score": 94
+    },
+    {
+      "id": "proof-not-cured-healing",
+      "category": "proof",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": [],
+      "text": "I'm not cured. I'm healing. And I document every step so you can see exactly what this looks like.",
+      "bestFor": ["instagram", "facebook"],
+      "score": 88
+    },
+    {
+      "id": "proof-science-confirms",
+      "category": "proof",
+      "primaryPillar": "Stabilise",
+      "secondaryPillars": ["Reprogram"],
+      "text": "The science now says what I lived: cortisol destroys melanocytes. Trauma lives in cortisol. Do the math.",
+      "bestFor": ["youtube", "facebook"],
+      "score": 85
+    },
+    {
+      "id": "proof-free-real-method",
+      "category": "proof",
+      "primaryPillar": "Integrate",
+      "secondaryPillars": [],
+      "text": "Free community. Real method. No pretending this is simple — but also no pretending it's impossible.",
+      "bestFor": ["instagram", "facebook"],
+      "score": 82
+    }
+  ]
+}
+
