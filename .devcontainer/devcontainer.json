@@ -1,0 +1,14 @@
+{
+  "name": "IRIS Headless Engine",
+  "image": "mcr.microsoft.com/devcontainers/dotnet:8.0",
+  "forwardPorts": [5000],
+  "portsAttributes": {
+    "5000": {
+      "label": "IRIS API",
+      "onAutoForward": "notify"
+    }
+  },
+  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core",
+  "postCreateCommand": "dotnet build src/InnerShiftLab.csproj -c Release",
+  "postStartCommand": "bash -lc 'mkdir -p data && nohup dotnet run --project src -c Release > data/iris-run.log 2>&1 & echo \"IRIS auto-started on port 5000\"'"
+}
