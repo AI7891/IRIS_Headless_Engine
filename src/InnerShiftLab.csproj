@@ -20,20 +20,23 @@
     <PackageReference Include="Quartz.Extensions.Hosting" Version="3.13.1" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.5" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
+    <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="2.1.6" />
     <PackageReference Include="QuestPDF" Version="2024.7.3" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.2.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
-    <PackageReference Include="Google.Apis.YouTube.v3" Version="1.68.0.3746" />
-    <PackageReference Include="Google.Apis.Auth" Version="1.68.0" />
+    <PackageReference Include="Google.Apis.YouTube.v3" Version="1.69.0.3674" />
+    <PackageReference Include="Google.Apis.Auth" Version="1.69.0" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="..\hooks.json" CopyToOutputDirectory="PreserveNewest" Link="hooks.json" />
-    <None Update="..\pillars.json" CopyToOutputDirectory="PreserveNewest" Link="pillars.json" />
-    <None Update="..\appsettings.json" CopyToOutputDirectory="PreserveNewest" Link="appsettings.json" />
+    <!-- Data files live at the repo root (one level up from this project). Copy them
+         next to the built binary so the app is self-contained wherever it is run. -->
+    <None Include="..\hooks.json" CopyToOutputDirectory="PreserveNewest" Link="hooks.json" />
+    <None Include="..\pillars.json" CopyToOutputDirectory="PreserveNewest" Link="pillars.json" />
+    <None Include="..\appsettings.json" CopyToOutputDirectory="PreserveNewest" Link="appsettings.json" />
   </ItemGroup>
 
 </Project>

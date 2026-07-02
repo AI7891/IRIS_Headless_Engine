@@ -2,6 +2,7 @@
 //  Meta Provider — Instagram Graph + Facebook Pages
 //  Full OAuth: dialog -> callback -> long-lived token -> IG user ID -> page token fanout
 // =============================================================================
+using InnerShiftLab.Auth;
 using InnerShiftLab.Core;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
@@ -236,10 +237,8 @@ public sealed class MetaProvider : IMetaProvider
 
     public async Task<(string Status, DateTimeOffset? ExpiresAt)> GetTokenStatusAsync()
     {
-        var tokensJson = await _vault.LoadTokensAsync("meta");
-        if (string.IsNullOrEmpty(tokensJson)) return ("no_token", null);
-        var set = JsonConvert.DeserializeObject<TokenSet>(tokensJson);
-        if (set == null) return ("invalid", null);
+        var set = await _vault.LoadTokensAsync("meta");
+        if (set == null) return ("no_token", null);
         if (set.ExpiresAt < DateTimeOffset.UtcNow) return ("expired", set.ExpiresAt);
         return ("valid", set.ExpiresAt);
     }
@@ -254,6 +253,7 @@ public sealed class MetaProvider : IMetaProvider
         {
             AccessToken = AccessToken ?? throw new InvalidOperationException("Meta response missing access_token"),
             TokenType = TokenType ?? "Bearer",
+            // Meta long-lived tokens (60 days) have no refresh_token; expiry drives re-auth.
             ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(ExpiresIn ?? 3600),
         };
     }
@@ -277,17 +277,6 @@ public sealed class MetaProvider : IMetaProvider
     private sealed class StatusResponse          { [JsonProperty("status_code")] public string? StatusCode { get; set; } }
 }
 
-public sealed class TokenSet
-{
-    public string AccessToken { get; set; } = "";
-    public string TokenType { get; set; } = "Bearer";
-    public DateTimeOffset ExpiresAt { get; set; } = DateTimeOffset.UtcNow.AddHours(1);
-    public string? PageAccessToken { get; set; }
-    public string? PageId { get; set; }
-    public string? IgBusinessId { get; set; }
-    public string? IgUsername { get; set; }
-}
-
 public sealed class InstagramUser
 {
     public string Id { get; }
@@ -306,7 +295,7 @@ public sealed class PageInfo
     [JsonProperty("name")] public string? Name { get; set; }
     [JsonProperty("access_token")] public string? AccessToken { get; set; }
     [JsonProperty("instagram_business_account")] public IgBusinessRef? InstagramBusinessAccount { get; set; }
-    private sealed class IgBusinessRef
+    public sealed class IgBusinessRef
     {
         [JsonProperty("id")] public string Id { get; set; } = "";
         [JsonProperty("username")] public string Username { get; set; } = "";

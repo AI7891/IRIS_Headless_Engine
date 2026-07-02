@@ -92,6 +92,18 @@ public sealed class PostSlot
     public string? Error { get; set; }
 }
 
+public sealed class TokenSet
+{
+    public string AccessToken { get; set; } = "";
+    public string TokenType { get; set; } = "Bearer";
+    public string? RefreshToken { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; } = DateTimeOffset.UtcNow.AddHours(1);
+    public string? PageAccessToken { get; set; }
+    public string? PageId { get; set; }
+    public string? IgBusinessId { get; set; }
+    public string? IgUsername { get; set; }
+}
+
 public sealed class Conversion
 {
     public string PostId { get; set; } = "";

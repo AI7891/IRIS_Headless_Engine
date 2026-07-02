@@ -2,6 +2,7 @@
 //  TikTok Provider — Content Posting API
 //  Auth: client_key/secret -> 2h token -> direct post (no user timeline required for direct post)
 // =============================================================================
+using InnerShiftLab.Auth;
 using InnerShiftLab.Core;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
@@ -66,6 +67,7 @@ public sealed class TikTokProvider : ITiktokProvider
         {
             AccessToken = tok.AccessToken ?? throw new InvalidOperationException("TikTok response missing access_token"),
             TokenType = "Bearer",
+            RefreshToken = tok.RefreshToken,
             ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tok.ExpiresIn ?? 7200),
         };
     }
@@ -90,6 +92,8 @@ public sealed class TikTokProvider : ITiktokProvider
         {
             AccessToken = tok.AccessToken ?? throw new InvalidOperationException("TikTok refresh missing access_token"),
             TokenType = "Bearer",
+            // TikTok rotates the refresh token on each refresh; fall back to the old one if absent.
+            RefreshToken = tok.RefreshToken ?? refreshToken,
             ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tok.ExpiresIn ?? 7200),
         };
     }
@@ -129,10 +133,8 @@ public sealed class TikTokProvider : ITiktokProvider
 
     public async Task<(string Status, DateTimeOffset? ExpiresAt)> GetTokenStatusAsync()
     {
-        var tokensJson = await _vault.LoadTokensAsync("tiktok");
-        if (string.IsNullOrEmpty(tokensJson)) return ("no_token", null);
-        var set = JsonConvert.DeserializeObject<TokenSet>(tokensJson);
-        if (set == null) return ("invalid", null);
+        var set = await _vault.LoadTokensAsync("tiktok");
+        if (set == null) return ("no_token", null);
         if (set.ExpiresAt < DateTimeOffset.UtcNow) return ("expired", set.ExpiresAt);
         return ("valid", set.ExpiresAt);
     }

@@ -24,8 +24,7 @@ public sealed class TokenVault : ITokenVault
 
     public TokenVault(IWebHostEnvironment env)
     {
-        _keyDir = Path.Combine(env.ContentRootPath, "..", "data");
-        if (!Directory.Exists(_keyDir)) Directory.CreateDirectory(_keyDir);
+        _keyDir = AppPaths.DataDir(AppPaths.ResolveRoot(env.ContentRootPath));
         _encryptionKey = LoadOrCreateKey(Path.Combine(_keyDir, "vault.key"));
     }
 
@@ -35,7 +34,10 @@ public sealed class TokenVault : ITokenVault
             return Convert.FromBase64String(File.ReadAllText(path));
         var key = RandomNumberGenerator.GetBytes(32); // AES-256
         File.WriteAllText(path, Convert.ToBase64String(key));
-        try { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* Windows */ }
+        if (!OperatingSystem.IsWindows())
+        {
+            try { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best effort */ }
+        }
         return key;
     }
 
@@ -113,7 +115,8 @@ public static class MetaOAuthHelper
 
 public interface IWebhookVerifier
 {
-    bool VerifyMetaChallenge(IQueryCollection query);
+    /// <summary>Returns the hub.challenge value to echo back when the subscription check passes, else null.</summary>
+    string? VerifyMetaChallenge(IQueryCollection query);
     bool VerifyMetaSignature(IHeaderDictionary headers, string body);
     bool VerifySkoolSignature(IHeaderDictionary headers, string body);
 }
@@ -128,18 +131,22 @@ public sealed class WebhookVerifier : IWebhookVerifier
         _mon = mon.Value; _log = log;
     }
 
-    public bool VerifyMetaChallenge(IQueryCollection query)
+    public string? VerifyMetaChallenge(IQueryCollection query)
     {
         var mode = query["hub.mode"].ToString();
         var token = query["hub.verify_token"].ToString();
         var challenge = query["hub.challenge"].ToString();
-        if (mode == "subscribe" && token == _mon.MetaAppSecret && !string.IsNullOrEmpty(challenge))
+        if (mode == "subscribe"
+            && CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(_mon.MetaAppSecret))
+            && !string.IsNullOrEmpty(challenge))
         {
             _log.LogInformation("Meta webhook challenge verified");
-            return true;
+            return challenge;
         }
-        _log.LogWarning("Meta webhook challenge failed: mode={Mode} token={Token}", mode, token);
-        return false;
+        // Don't log the presented token — it's a secret.
+        _log.LogWarning("Meta webhook challenge failed: mode={Mode}", mode);
+        return null;
     }
 
     public bool VerifyMetaSignature(IHeaderDictionary headers, string body)

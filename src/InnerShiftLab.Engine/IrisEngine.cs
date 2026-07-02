@@ -4,7 +4,6 @@
 using InnerShiftLab.Core;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
-using System.Collections.Concurrent;
 
 namespace InnerShiftLab.Engine;
 
@@ -15,6 +14,7 @@ public interface IIrisEngine
     PostSlot Enqueue(string hookId, Pillar pillar, string[] platforms);
     IReadOnlyList<PostSlot> GetCurrentQueue();
     IReadOnlyList<PostSlot> GetCurrentQueueForPlatform(string platform);
+    void RemoveFromQueue(PostSlot slot);
     void MarkPublished(PostSlot slot);
     void MarkFailed(PostSlot slot, string error);
     HookScore ScoreHook(Hook hook, string platform, DateTimeOffset targetTime);
@@ -38,14 +38,16 @@ public sealed class IrisEngine : IIrisEngine
     private readonly ILogger<IrisEngine> _log;
     private readonly List<Hook> _hooks = new();
     private readonly Dictionary<string, PillarWeight> _pillarWeights = new();
-    private readonly ConcurrentQueue<PostSlot> _queue = new();
+    private readonly List<PostSlot> _queue = new();
+    private readonly object _queueLock = new();
 
     public IrisEngine(IOptions<IrisSettings> opts, ILogger<IrisEngine> log, IWebHostEnvironment env)
     {
         _settings = opts.Value;
         _log = log;
-        LoadHooks(Path.Combine(env.ContentRootPath, "..", "hooks.json"));
-        LoadPillars(Path.Combine(env.ContentRootPath, "..", "pillars.json"));
+        var root = AppPaths.ResolveRoot(env.ContentRootPath);
+        LoadHooks(AppPaths.DataFile(root, "hooks.json"));
+        LoadPillars(AppPaths.DataFile(root, "pillars.json"));
     }
 
     private void LoadHooks(string path)
@@ -98,15 +100,27 @@ public sealed class IrisEngine : IIrisEngine
             Caption = caption,
             ScheduledAt = scheduled,
         };
-        _queue.Enqueue(slot);
+        lock (_queueLock) _queue.Add(slot);
         _log.LogInformation("Enqueued slot {Id} for hook {Hook} pillar {Pillar} platforms {Platforms} @ {When:o}",
             slot.SlotId, hook.Id, pillar, string.Join(",", platforms ?? Array.Empty<string>()), scheduled);
         return slot;
     }
 
-    public IReadOnlyList<PostSlot> GetCurrentQueue() => _queue.ToArray();
-    public IReadOnlyList<PostSlot> GetCurrentQueueForPlatform(string platform) =>
-        _queue.ToArray().Where(s => s.Platforms.Contains(platform, StringComparer.OrdinalIgnoreCase)).ToList();
+    public IReadOnlyList<PostSlot> GetCurrentQueue()
+    {
+        lock (_queueLock) return _queue.ToArray();
+    }
+
+    public IReadOnlyList<PostSlot> GetCurrentQueueForPlatform(string platform)
+    {
+        lock (_queueLock)
+            return _queue.Where(s => s.Platforms.Contains(platform, StringComparer.OrdinalIgnoreCase)).ToArray();
+    }
+
+    public void RemoveFromQueue(PostSlot slot)
+    {
+        lock (_queueLock) _queue.RemoveAll(s => s.SlotId == slot.SlotId);
+    }
 
     public void MarkPublished(PostSlot slot)
     {
@@ -131,15 +145,15 @@ public sealed class IrisEngine : IIrisEngine
         var platformFit = hook.BestFor.Length == 0 ? 0.5
             : (hook.BestFor.Any(b => string.Equals(b, platform, StringComparison.OrdinalIgnoreCase)) ? 1.0 : 0.3);
 
-        // Time fit: how close to a scheduled posting slot
+        // Time fit: how close to the nearest scheduled posting slot (take the best match).
         var timeFit = 0.0;
         foreach (var slotStr in _settings.PostingTimesUtc)
         {
             var parts = slotStr.Split(':');
             var slotTime = new TimeSpan(int.Parse(parts[0]), int.Parse(parts[1]), 0);
             var diff = Math.Abs((targetTime.UtcDateTime.TimeOfDay - slotTime).TotalMinutes);
-            if (diff < 30) timeFit = 1.0;
-            else if (diff < 90) timeFit = 0.6;
+            var thisFit = diff < 30 ? 1.0 : diff < 90 ? 0.6 : 0.0;
+            if (thisFit > timeFit) timeFit = thisFit;
         }
         if (timeFit == 0) timeFit = 0.3; // off-slot still publishable, lower priority
 

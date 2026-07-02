@@ -27,8 +27,7 @@ public sealed class HeartbeatJob : IJob
         // and that Quartz is actually firing (Codespaces idle-timeout bypass relies on this)
         try
         {
-            var dir = Path.Combine(_env.ContentRootPath, "..", "data");
-            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            var dir = AppPaths.DataDir(AppPaths.ResolveRoot(_env.ContentRootPath));
             var path = Path.Combine(dir, "heartbeat.txt");
             File.WriteAllText(path, DateTimeOffset.UtcNow.ToString("O"));
         }
@@ -47,11 +46,12 @@ public sealed class DailyPostJob : IJob
     private readonly IProviderRouter _router;
     private readonly IMonetizationLogger _mon;
     private readonly IRepository _repo;
+    private readonly IrisSettings _settings;
     private readonly ILogger<DailyPostJob> _log;
 
-    public DailyPostJob(IIrisEngine engine, IProviderRouter router, IMonetizationLogger mon, IRepository repo, ILogger<DailyPostJob> log)
+    public DailyPostJob(IIrisEngine engine, IProviderRouter router, IMonetizationLogger mon, IRepository repo, IrisSettings settings, ILogger<DailyPostJob> log)
     {
-        _engine = engine; _router = router; _mon = mon; _repo = repo; _log = log;
+        _engine = engine; _router = router; _mon = mon; _repo = repo; _settings = settings; _log = log;
     }
 
     public async Task Execute(IJobExecutionContext context)
@@ -72,18 +72,38 @@ public sealed class DailyPostJob : IJob
                 }
                 queued = _engine.GetCurrentQueue();
             }
+
+            // Enforce MaxPostsPerDayPerPlatform: seed today's counts from what was already published.
+            var publishedToday = await _repo.GetPublishedTodayAsync();
+            var perPlatformCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in publishedToday)
+                foreach (var plat in p.Platforms)
+                    perPlatformCount[plat] = perPlatformCount.GetValueOrDefault(plat) + 1;
+            var max = Math.Max(0, _settings.MaxPostsPerDayPerPlatform);
+
             foreach (var slot in queued)
             {
                 try
                 {
                     var req = new PublishRequest(slot.HookId, slot.Pillar.ToString(), slot.Caption, slot.MediaUrl);
+                    var anyPublished = false;
+                    var anySkippedByCap = false;
                     foreach (var platform in slot.Platforms)
                     {
+                        if (perPlatformCount.GetValueOrDefault(platform) >= max)
+                        {
+                            anySkippedByCap = true;
+                            _log.LogInformation("Skipping {Platform} for hook {Hook}: daily cap ({Max}) reached",
+                                platform, slot.HookId, max);
+                            continue;
+                        }
                         try
                         {
                             var published = await _router.PublishAsync(platform, req);
                             slot.PerPlatformPostIds = slot.PerPlatformPostIds.Concat(published.PerPlatformPostIds).ToArray();
                             slot.PerPlatformUrls = slot.PerPlatformUrls.Concat(published.PerPlatformUrls).ToArray();
+                            perPlatformCount[platform] = perPlatformCount.GetValueOrDefault(platform) + 1;
+                            anyPublished = true;
                             _log.LogInformation("Published to {Platform}: {Url}",
                                 platform, published.PerPlatformUrls.FirstOrDefault());
                         }
@@ -93,14 +113,34 @@ public sealed class DailyPostJob : IJob
                                 platform, slot.HookId);
                         }
                     }
-                    slot.Status = slot.PerPlatformUrls.Length > 0 ? PostStatus.Published : PostStatus.Failed;
+
+                    if (anyPublished)
+                    {
+                        slot.Status = PostStatus.Published;
+                        _engine.MarkPublished(slot);
+                        // Slot is done — remove from the in-memory queue so it isn't re-published next run.
+                        _engine.RemoveFromQueue(slot);
+                    }
+                    else if (anySkippedByCap)
+                    {
+                        // Nothing published only because of the daily cap: leave queued for a later run.
+                        slot.Status = PostStatus.Queued;
+                    }
+                    else
+                    {
+                        slot.Status = PostStatus.Failed;
+                        _engine.MarkFailed(slot, "All platform publishes failed");
+                        _engine.RemoveFromQueue(slot);
+                    }
+
                     await _mon.LogPostAsync(slot);
                     await _repo.SavePostAsync(slot);
                 }
                 catch (Exception ex)
                 {
                     _log.LogError(ex, "Slot {Slot} failed end-to-end", slot.SlotId);
-                    await _engine.MarkFailed(slot, ex.Message);
+                    _engine.MarkFailed(slot, ex.Message);
+                    _engine.RemoveFromQueue(slot);
                 }
             }
         }
