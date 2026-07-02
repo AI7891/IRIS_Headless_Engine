@@ -1,0 +1,33 @@
+name: CI
+
+# Build and run the test suite on every push/PR so nothing merges red.
+on:
+  push:
+    branches: [ Dev ]
+  pull_request:
+    branches: [ Dev ]
+  workflow_dispatch: {}
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install ffmpeg + fonts (needed by ContentRenderer)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+
+      - name: Restore
+        run: dotnet restore tests/InnerShiftLab.Tests/InnerShiftLab.Tests.csproj
+
+      - name: Build (Release, warnings as errors)
+        run: dotnet build tests/InnerShiftLab.Tests/InnerShiftLab.Tests.csproj -c Release --no-restore /warnaserror
+
+      - name: Test
+        run: dotnet test tests/InnerShiftLab.Tests/InnerShiftLab.Tests.csproj -c Release --no-build --verbosity normal
