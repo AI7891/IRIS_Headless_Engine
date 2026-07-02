@@ -4,6 +4,8 @@
 #  Installs the .NET 8 SDK (if missing), ffmpeg + DejaVu fonts (needed by
 #  ContentRenderer), then restores/builds and runs the test suite.
 #
+#  Runs in ASYNC mode: the session starts immediately and this setup runs in the
+#  background, so a slow install never blocks or fails the session start.
 #  Resilient by design: a failing step is logged but never aborts the session.
 # =============================================================================
 
@@ -11,6 +13,10 @@
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
+
+# Async: return control to the session now; the rest runs in the background.
+# asyncTimeout (ms) is generous enough for a cold container (SDK + build + tests).
+echo '{"async": true, "asyncTimeout": 600000}'
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
