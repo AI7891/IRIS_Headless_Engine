@@ -8,6 +8,7 @@ your phone's job is only to keep the Codespace awake by pinging `/healthz`.
 |---|---|
 | `termux-heartbeat.sh` | Ping `/healthz` every 10 min so Codespaces never idles out. |
 | `termux-boot-start.sh` | Termux:Boot launcher — runs the heartbeat automatically on phone boot. |
+| `termux-status.sh` | One-shot at-a-glance status: health, token status, queue depth, revenue. |
 
 ## How it fits together
 
@@ -33,6 +34,29 @@ termux-heartbeat.sh  --- GET /healthz --->  IRIS app (auto-started by devcontain
    ~/iris/termux-heartbeat.sh
    ```
    You should see `ok` lines every 10 minutes.
+
+## Check status any time
+
+```bash
+pkg install jq          # optional, for the clean formatted view
+export IRIS_URL="https://YOUR-CODESPACE-5000.app.github.dev"
+~/iris/termux-status.sh
+```
+
+Example output:
+
+```
+health   : UP
+ready    : yes (db reachable)
+providers:
+  meta   : no_token
+  tiktok : no_token
+  youtube: no_token
+queue    : 1 slot(s)
+revenue  : €0   joins:0   clicks:0
+```
+
+`no_token` means that platform still needs its `/auth/<platform>/login`.
 
 ## Auto-start on boot (optional)
 
