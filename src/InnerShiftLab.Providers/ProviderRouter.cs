@@ -57,10 +57,10 @@ public sealed class ProviderRouter : IProviderRouter
         };
     }
 
-    public async Task<PostSlot> DryRunAsync(PostSlot slot)
+    public Task<PostSlot> DryRunAsync(PostSlot slot)
     {
         // Returns a preview without actually publishing
-        return slot;
+        return Task.FromResult(slot);
     }
 
     private async Task<PostSlot> PublishInstagramAsync(TokenSet tokens, PublishRequest req)
@@ -68,7 +68,8 @@ public sealed class ProviderRouter : IProviderRouter
         if (string.IsNullOrEmpty(tokens.IgBusinessId) || string.IsNullOrEmpty(tokens.PageAccessToken))
             throw new InvalidOperationException("Meta tokens missing IG business id or page token. Re-authenticate via /auth/meta/login.");
         var media = await EnsureMediaAsync(req.MediaUrl, req.Caption, "instagram");
-        var id = await _meta.PublishInstagramMediaAsync(tokens.IgBusinessId, tokens.AccessToken, media, req.Caption);
+        // IG Graph publishing must use the page access token, not the user token.
+        var id = await _meta.PublishInstagramMediaAsync(tokens.IgBusinessId, tokens.PageAccessToken, media, req.Caption);
         return new PostSlot
         {
             HookId = req.HookId, HookText = req.Caption, Caption = req.Caption,
@@ -143,7 +144,8 @@ public sealed class ProviderRouter : IProviderRouter
         }
         if (!File.Exists(videoPath))
             throw new InvalidOperationException($"YouTube publish requires a video file at {videoPath}");
-        var id = await _yt.UploadVideoAsync(tokens.AccessToken, tokens.AccessToken, videoPath, req.HookId ?? "Inner Shift Lab", req.Caption);
+        var title = string.IsNullOrWhiteSpace(req.HookId) ? "Inner Shift Lab" : req.HookId;
+        var id = await _yt.UploadVideoAsync(tokens.AccessToken, tokens.RefreshToken ?? "", videoPath, title, req.Caption);
         return new PostSlot
         {
             HookId = req.HookId, HookText = req.Caption, Caption = req.Caption,
@@ -171,18 +173,33 @@ public sealed class ProviderRouter : IProviderRouter
         return await _renderer.RenderImageAsync(caption);
     }
 
-    private async Task<(string, DateTimeOffset?)> SafeGet(Func<Task<(string, DateTimeOffset?)>> f)
+    private async Task<ProviderTokenStatus> SafeGet(Func<Task<(string Status, DateTimeOffset? ExpiresAt)>> f)
     {
-        try { return await f(); }
-        catch (Exception ex) { _log.LogError(ex, "Provider status check failed"); return ("error", null); }
+        try
+        {
+            var (status, expiresAt) = await f();
+            return new ProviderTokenStatus { Status = status, ExpiresAt = expiresAt };
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Provider status check failed");
+            return new ProviderTokenStatus { Status = "error" };
+        }
     }
+}
+
+public sealed class ProviderTokenStatus
+{
+    public string Status { get; set; } = "unknown";
+    public DateTimeOffset? ExpiresAt { get; set; }
 }
 
 public sealed class ProviderStatus
 {
-    public (string Status, DateTimeOffset? ExpiresAt) Meta { get; set; }
-    public (string Status, DateTimeOffset? ExpiresAt) Tiktok { get; set; }
-    public (string Status, DateTimeOffset? ExpiresAt) Youtube { get; set; }
+    // System.Text.Json does not serialize ValueTuple members, so use plain properties.
+    public ProviderTokenStatus Meta { get; set; } = new();
+    public ProviderTokenStatus Tiktok { get; set; } = new();
+    public ProviderTokenStatus Youtube { get; set; } = new();
 }
 
 

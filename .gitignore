@@ -1,0 +1,26 @@
+# Build output
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+*.user
+
+# Runtime state (generated at runtime, must never be committed)
+data/
+output/
+*.db
+*.db-shm
+*.db-wal
+*.tok
+vault.key
+heartbeat.txt
+*.log
+
+# Test results
+[Tt]est[Rr]esults/
+*.trx
+
+# OS / editor
+.DS_Store
+.vs/
+.idea/

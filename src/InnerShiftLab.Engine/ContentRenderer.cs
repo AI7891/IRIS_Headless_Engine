@@ -10,6 +10,7 @@ using SixLabors.ImageSharp.Processing;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
+using Color = SixLabors.ImageSharp.Color;
 
 namespace InnerShiftLab.Engine;
 
@@ -24,11 +25,16 @@ public sealed class ContentRenderer : IContentRenderer
 {
     private readonly ILogger<ContentRenderer> _log;
     private readonly IWebHostEnvironment _env;
-    public ContentRenderer(ILogger<ContentRenderer> log, IWebHostEnvironment env) { _log = log; _env = env; }
+    private readonly string _outputDir;
+    public ContentRenderer(ILogger<ContentRenderer> log, IWebHostEnvironment env)
+    {
+        _log = log; _env = env;
+        _outputDir = AppPaths.OutputDir(AppPaths.ResolveRoot(env.ContentRootPath));
+    }
 
     public async Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default")
     {
-        outPath ??= Path.Combine(_env.ContentRootPath, "..", "output", $"iris-{Guid.NewGuid():N}.png");
+        outPath ??= Path.Combine(_outputDir, $"iris-{Guid.NewGuid():N}.png");
         Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
 
         // 1080x1080 — IG square
@@ -43,10 +49,10 @@ public sealed class ContentRenderer : IContentRenderer
 
         var lines = WrapText(text, 28);
         var y = 200;
-        // Try a real font, fall back to a default
-        var fontFamily = SystemFonts.Collection.Families.FirstOrDefault()?.Name ?? "Arial";
-        var font = SystemFonts.CreateFont(fontFamily, 48, SixLabors.Fonts.FontStyle.Bold);
-        var smallFont = SystemFonts.CreateFont(fontFamily, 28, SixLabors.Fonts.FontStyle.Regular);
+        // Resolve a font family: prefer an installed system font, otherwise load one from disk.
+        var family = ResolveFontFamily();
+        var font = family.CreateFont(48, SixLabors.Fonts.FontStyle.Bold);
+        var smallFont = family.CreateFont(28, SixLabors.Fonts.FontStyle.Regular);
         foreach (var line in lines)
         {
             img.Mutate(c => c.DrawText(line, font, fg, new PointF(60, y)));
@@ -61,7 +67,7 @@ public sealed class ContentRenderer : IContentRenderer
 
     public async Task<string> RenderPdfAsync(string title, IEnumerable<string> sections, string? outPath = null)
     {
-        outPath ??= Path.Combine(_env.ContentRootPath, "..", "output", $"iris-{Guid.NewGuid():N}.pdf");
+        outPath ??= Path.Combine(_outputDir, $"iris-{Guid.NewGuid():N}.pdf");
         Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
 
         QuestPDF.Settings.License = LicenseType.Community;
@@ -99,7 +105,7 @@ public sealed class ContentRenderer : IContentRenderer
 
     public async Task<string> RenderVideoAsync(string text, string backgroundPath, string? outPath = null, int durationSec = 15)
     {
-        outPath ??= Path.Combine(_env.ContentRootPath, "..", "output", $"iris-{Guid.NewGuid():N}.mp4");
+        outPath ??= Path.Combine(_outputDir, $"iris-{Guid.NewGuid():N}.mp4");
         Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
         var textFile = Path.Combine(Path.GetDirectoryName(outPath)!, $"text-{Guid.NewGuid():N}.txt");
         await File.WriteAllTextAsync(textFile, text);
@@ -129,6 +135,27 @@ public sealed class ContentRenderer : IContentRenderer
         }
         _log.LogInformation("Rendered video: {Path}", outPath);
         return outPath;
+    }
+
+    private static SixLabors.Fonts.FontFamily ResolveFontFamily()
+    {
+        var system = SixLabors.Fonts.SystemFonts.Collection.Families.FirstOrDefault();
+        if (system != default) return system;
+
+        // No system fonts (common on trimmed Linux images). Load a bundled/common TTF.
+        var candidates = new[]
+        {
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        };
+        var collection = new SixLabors.Fonts.FontCollection();
+        foreach (var path in candidates)
+        {
+            if (File.Exists(path)) return collection.Add(path);
+        }
+        throw new InvalidOperationException(
+            "No usable font found. Install one (e.g. `apt-get install -y fonts-dejavu-core`) so image rendering can draw text.");
     }
 
     private static List<string> WrapText(string text, int maxLineLen)

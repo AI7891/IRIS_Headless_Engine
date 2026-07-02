@@ -14,6 +14,7 @@ using InnerShiftLab.Providers;
 using InnerShiftLab.Scheduling;
 using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Quartz;
 using Serilog;
 using System.Text.Json;
@@ -32,7 +33,16 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
-    var builder = WebApplication.CreateBuilder(args);
+    // The documented workflow runs from src/ with appsettings.json at the repo root, and a
+    // published build copies it next to the binary. Resolve the app root up front and use it as
+    // the content root so the default configuration loader reads appsettings.json with normal
+    // precedence (environment variables and command line still override it).
+    var appRoot = AppPaths.ResolveRoot(Directory.GetCurrentDirectory());
+    var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+    {
+        Args = args,
+        ContentRootPath = appRoot,
+    });
     builder.Host.UseSerilog();
 
     // -----------------------------------------------------------------------------
@@ -44,7 +54,14 @@ try
         o.SerializerOptions.PropertyNameCaseInsensitive = true;
         o.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
         o.SerializerOptions.WriteIndented = true;
+        // Serialize enums as their names so responses (e.g. pillar) match the string values
+        // the API accepts on input, rather than emitting raw integers.
+        o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     });
+
+    // Swagger/OpenAPI — required by app.UseSwagger()/UseSwaggerUI() below and the "/" landing page.
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen();
 
     // -----------------------------------------------------------------------------
     // 2. Bind strongly-typed config sections (fail fast if missing)
@@ -73,10 +90,12 @@ try
     builder.Services.AddSingleton(socialsSettings);
     builder.Services.AddSingleton(monetizationSettings);
 
-    // SQLite repo for posts, tokens, conversions, webhook events
-    builder.Services.AddSingleton<IRepository>(_ =>
-        new SqliteRepository(builder.Configuration.GetConnectionString("Default")
-            ?? "Data Source=data/iris.db"));
+    // SQLite repo for posts, tokens, conversions, webhook events.
+    // Resolve a relative "Data Source" against the app root so the db lands in the same
+    // data/ dir as the token vault and heartbeat, independent of the launch directory.
+    var connString = builder.Configuration.GetConnectionString("Default") ?? "Data Source=data/iris.db";
+    connString = AppPaths.ResolveConnectionString(connString, appRoot);
+    builder.Services.AddSingleton<IRepository>(_ => new SqliteRepository(connString));
 
     // HTTP clients (named, so we can apply per-provider policies)
     builder.Services.AddHttpClient("meta",     c => { c.Timeout = TimeSpan.FromSeconds(30); });
@@ -189,7 +208,9 @@ try
 
     app.MapPost("/api/iris/enqueue", (EnqueueRequest req, IIrisEngine e) =>
     {
-        var slot = e.Enqueue(req.HookId, req.Pillar, req.Platforms);
+        if (!Enum.TryParse<Pillar>(req.Pillar, ignoreCase: true, out var pillar))
+            return Results.BadRequest($"Unknown pillar '{req.Pillar}'. Expected one of: {string.Join(", ", Enum.GetNames<Pillar>())}");
+        var slot = e.Enqueue(req.HookId, pillar, req.Platforms);
         return Results.Ok(slot);
     });
 
@@ -256,7 +277,11 @@ try
         return Results.Ok(new { ok = true, expiresAt = longLived.ExpiresAt, igUsername = longLived.IgUsername });
     });
     app.MapGet("/auth/meta/webhook",   (HttpContext ctx, IWebhookVerifier w) =>
-        w.VerifyMetaChallenge(ctx.Request.Query));
+    {
+        // Meta subscription verification: echo hub.challenge as plain text on success.
+        var challenge = w.VerifyMetaChallenge(ctx.Request.Query);
+        return challenge != null ? Results.Text(challenge) : Results.StatusCode(403);
+    });
     app.MapPost("/auth/meta/webhook",  async (
         HttpContext ctx, IWebhookVerifier w, IRepository r) =>
     {

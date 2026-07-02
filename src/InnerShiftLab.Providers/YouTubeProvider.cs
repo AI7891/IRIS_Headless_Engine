@@ -2,8 +2,10 @@
 //  YouTube Provider — Data API v3 (resumable upload)
 //  Auth: OAuth2 (client_id/secret) -> token.json -> refresh
 // =============================================================================
+using InnerShiftLab.Auth;
 using InnerShiftLab.Core;
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Auth.OAuth2.Flows;
 using Google.Apis.Services;
 using Google.Apis.Upload;
 using Google.Apis.YouTube.v3;
@@ -41,7 +43,6 @@ public sealed class YouTubeProvider : IYoutubeProvider
         if (string.IsNullOrEmpty(yt.ClientId) || string.IsNullOrEmpty(yt.RedirectUri))
             throw new InvalidOperationException("YouTube ClientId/RedirectUri not configured");
         // Standard YouTube upload scope + force SSL
-        var scope = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl";
         var oauth = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
         {
             ClientSecrets = new ClientSecrets { ClientId = yt.ClientId, ClientSecret = yt.ClientSecret },
@@ -64,6 +65,7 @@ public sealed class YouTubeProvider : IYoutubeProvider
         {
             AccessToken = token.AccessToken ?? throw new InvalidOperationException("YouTube exchange missing access_token"),
             TokenType = "Bearer",
+            RefreshToken = token.RefreshToken,
             ExpiresAt = token.ExpiresInSeconds.HasValue
                 ? DateTimeOffset.UtcNow.AddSeconds(token.ExpiresInSeconds.Value)
                 : DateTimeOffset.UtcNow.AddHours(1),
@@ -83,6 +85,8 @@ public sealed class YouTubeProvider : IYoutubeProvider
         {
             AccessToken = token.AccessToken ?? throw new InvalidOperationException("YouTube refresh missing access_token"),
             TokenType = "Bearer",
+            // Google may omit refresh_token on refresh; keep the original so we can refresh again.
+            RefreshToken = token.RefreshToken ?? refreshToken,
             ExpiresAt = token.ExpiresInSeconds.HasValue
                 ? DateTimeOffset.UtcNow.AddSeconds(token.ExpiresInSeconds.Value)
                 : DateTimeOffset.UtcNow.AddHours(1),
@@ -94,22 +98,29 @@ public sealed class YouTubeProvider : IYoutubeProvider
         var yt = _socials.Youtube;
         if (!File.Exists(videoPath)) throw new FileNotFoundException("Video file not found", videoPath);
 
-        // If the access token is within 5 min of expiry, refresh first.
-        var vaultJson = await _vault.LoadRawAsync("youtube");
-        TokenSet? stored = null;
-        if (!string.IsNullOrEmpty(vaultJson))
-            stored = JsonConvert.DeserializeObject<TokenSet>(vaultJson);
+        // If the access token is within 5 min of expiry, refresh it using the stored refresh token.
+        var stored = await _vault.LoadTokensAsync("youtube");
         var token = accessToken;
-        if (stored != null && stored.ExpiresAt < DateTimeOffset.UtcNow.AddMinutes(5) && !string.IsNullOrEmpty(stored.AccessToken))
+        if (stored != null && stored.ExpiresAt < DateTimeOffset.UtcNow.AddMinutes(5))
         {
-            // We don't have a refresh token stored currently (TokenSet has no RefreshToken field).
-            // Caller must re-auth via /auth/youtube/login if expired.
-            _log.LogWarning("YouTube token near expiry ({Expiry}); refresh not yet implemented at vault level", stored.ExpiresAt);
+            var effectiveRefresh = !string.IsNullOrEmpty(refreshToken) ? refreshToken : stored.RefreshToken;
+            if (!string.IsNullOrEmpty(effectiveRefresh))
+            {
+                _log.LogInformation("YouTube token near expiry ({Expiry}); refreshing", stored.ExpiresAt);
+                var refreshed = await RefreshTokenAsync(effectiveRefresh);
+                // Preserve fields the refresh response doesn't return.
+                refreshed.RefreshToken ??= stored.RefreshToken;
+                await _vault.SaveTokensAsync("youtube", refreshed);
+                token = refreshed.AccessToken;
+            }
+            else
+            {
+                _log.LogWarning("YouTube token near expiry ({Expiry}) but no refresh token stored; re-auth via /auth/youtube/login", stored.ExpiresAt);
+            }
         }
 
         var initializer = new BaseClientService.Initializer
         {
-            ClientSecrets = new ClientSecrets { ClientId = yt.ClientId, ClientSecret = yt.ClientSecret },
             HttpClientInitializer = new GoogleCredentialFromToken(token),
             ApplicationName = "InnerShiftLab-IRIS",
         };
@@ -138,15 +149,14 @@ public sealed class YouTubeProvider : IYoutubeProvider
         if (result.Status == UploadStatus.Failed)
             throw new InvalidOperationException($"YouTube upload failed: {result.Exception?.Message}");
         if (result.Status == UploadStatus.NotStarted) throw new InvalidOperationException("YouTube upload did not start");
-        return result.Id ?? throw new InvalidOperationException("YouTube upload returned no ID");
+        // The uploaded Video (with its assigned Id) is on the upload request, not the progress result.
+        return upload.ResponseBody?.Id ?? throw new InvalidOperationException("YouTube upload returned no ID");
     }
 
     public async Task<(string Status, DateTimeOffset? ExpiresAt)> GetTokenStatusAsync()
     {
-        var tokensJson = await _vault.LoadTokensAsync("youtube");
-        if (string.IsNullOrEmpty(tokensJson)) return ("no_token", null);
-        var set = JsonConvert.DeserializeObject<TokenSet>(tokensJson);
-        if (set == null) return ("invalid", null);
+        var set = await _vault.LoadTokensAsync("youtube");
+        if (set == null) return ("no_token", null);
         if (set.ExpiresAt < DateTimeOffset.UtcNow) return ("expired", set.ExpiresAt);
         return ("valid", set.ExpiresAt);
     }
