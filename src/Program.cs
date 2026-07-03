@@ -7,6 +7,7 @@
 // =============================================================================
 
 using InnerShiftLab.Auth;
+using InnerShiftLab.ContentCreator;
 using InnerShiftLab.Core;
 using InnerShiftLab.Engine;
 using InnerShiftLab.Monetization;
@@ -75,6 +76,9 @@ try
     var monetizationSection = builder.Configuration.GetSection("Monetization");
     builder.Services.Configure<MonetizationSettings>(monetizationSection);
 
+    var contentCreatorSection = builder.Configuration.GetSection("ContentCreator");
+    builder.Services.Configure<ContentCreatorSettings>(contentCreatorSection);
+
     // Validate required config at startup — fail loud, not silent
     var irisSettings = irisSection.Get<IrisSettings>()
         ?? throw new InvalidOperationException("Missing [Iris] config section in appsettings.json");
@@ -102,6 +106,8 @@ try
     builder.Services.AddHttpClient("tiktok",   c => { c.Timeout = TimeSpan.FromSeconds(60); });
     builder.Services.AddHttpClient("youtube",  c => { c.Timeout = TimeSpan.FromSeconds(60); });
     builder.Services.AddHttpClient("linktree", c => { c.Timeout = TimeSpan.FromSeconds(15); });
+    builder.Services.AddHttpClient("pexels",     c => { c.Timeout = TimeSpan.FromSeconds(60); });
+    builder.Services.AddHttpClient("elevenlabs", c => { c.Timeout = TimeSpan.FromSeconds(120); });
 
     // Token vault — encrypted at rest, refresh-aware
     builder.Services.AddSingleton<ITokenVault, TokenVault>();
@@ -128,6 +134,16 @@ try
 
     // Monetization logger — links UTMs to conversions
     builder.Services.AddSingleton<IMonetizationLogger, MonetizationLogger>();
+
+    // Content creator pipeline — AI script (Claude) -> image carousel (Pexels) ->
+    // voiceover (ElevenLabs) -> composed final output for the publish backend.
+    var contentCreatorSettings = contentCreatorSection.Get<ContentCreatorSettings>() ?? new ContentCreatorSettings();
+    builder.Services.AddSingleton(contentCreatorSettings);
+    builder.Services.AddSingleton<IScriptGenerator, AnthropicScriptGenerator>();
+    builder.Services.AddSingleton<IImageFetcher, PexelsImageFetcher>();
+    builder.Services.AddSingleton<IVoiceSynthesizer, ElevenLabsVoiceSynthesizer>();
+    builder.Services.AddSingleton<IContentComposer, FfmpegContentComposer>();
+    builder.Services.AddSingleton<IContentCreationPipeline, ContentCreationPipeline>();
 
     // Webhook verifier — for Skool join events
     builder.Services.AddSingleton<IWebhookVerifier, WebhookVerifier>();
@@ -303,6 +319,20 @@ try
         return Results.Ok();
     });
 
+    // Content creator endpoints — AI script -> carousel -> voiceover -> composed output
+    app.MapPost("/api/creator/script", async (CreatorRequest? req, IScriptGenerator g, CancellationToken ct) =>
+        Results.Ok(await g.GenerateAsync(req?.Keywords, req?.SlideCount, ct)));
+
+    app.MapPost("/api/creator/run", async (CreatorRequest? req, IContentCreationPipeline p, CancellationToken ct) =>
+        Results.Ok(await p.CreateAsync(req?.Keywords, req?.SlideCount, ct)));
+
+    app.MapPost("/api/creator/publish", async (CreatorPublishRequest req, IContentCreationPipeline p, CancellationToken ct) =>
+    {
+        if (req.Platforms is null || req.Platforms.Length == 0)
+            return Results.BadRequest("Provide at least one platform (instagram, facebook, tiktok, youtube).");
+        return Results.Ok(await p.CreateAndPublishAsync(req.Keywords, req.Platforms, ct));
+    });
+
     // Monetization reporting — for KPI tracking
     app.MapGet("/api/monetization/summary", async (IMonetizationLogger m) =>
         Results.Ok(await m.GetSummaryAsync()));
@@ -346,6 +376,8 @@ return 0;
 // -----------------------------------------------------------------------------
 public record EnqueueRequest(string HookId, string Pillar, string[] Platforms);
 public record PublishRequest(string HookId, string Pillar, string Caption, string? MediaUrl);
+public record CreatorRequest(string? Keywords, int? SlideCount);
+public record CreatorPublishRequest(string? Keywords, string[] Platforms);
 
 
 
