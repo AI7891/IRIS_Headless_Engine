@@ -70,8 +70,8 @@ public sealed class PexelsImageFetcher : IImageFetcher
     private async Task<CarouselSlide?> FetchOneAsync(string scriptId, int index, string query,
         HashSet<long> usedPhotoIds, CancellationToken ct)
     {
-        var apiKey = _settings.Pexels.ApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey) || apiKey == "REPLACE_ME")
+        var apiKey = CreatorSecrets.Resolve(_settings.Pexels.ApiKey, envFallback: "PEXELS_API_KEY");
+        if (apiKey is null)
         {
             _log.LogWarning("Pexels API key not configured; slide {Index} will use the rendered fallback", index);
             return null;

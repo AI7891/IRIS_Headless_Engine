@@ -37,9 +37,9 @@ public sealed class ElevenLabsVoiceSynthesizer : IVoiceSynthesizer
 
     public async Task<string> SynthesizeAsync(ContentScript script, CancellationToken ct = default)
     {
-        var apiKey = _settings.ElevenLabs.ApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey) || apiKey == "REPLACE_ME")
-            throw new InvalidOperationException("ElevenLabs API key not configured (ContentCreator:ElevenLabs:ApiKey).");
+        var apiKey = CreatorSecrets.Resolve(_settings.ElevenLabs.ApiKey, envFallback: "ELEVENLABS_API_KEY")
+            ?? throw new InvalidOperationException(
+                "ElevenLabs API key not configured (ContentCreator:ElevenLabs:ApiKey or ELEVENLABS_API_KEY env var).");
 
         // The narration follows the carousel: slide voiceovers concatenated in order.
         var text = string.Join(" ", script.Slides.Select(s => s.Voiceover.Trim()).Where(s => s.Length > 0));

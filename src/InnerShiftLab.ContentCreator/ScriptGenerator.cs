@@ -26,10 +26,10 @@ public sealed class AnthropicScriptGenerator : IScriptGenerator
     {
         _settings = settings;
         _log = log;
-        var apiKey = !string.IsNullOrWhiteSpace(settings.Anthropic.ApiKey) && settings.Anthropic.ApiKey != "REPLACE_ME"
-            ? settings.Anthropic.ApiKey
-            : Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-        _client = new AnthropicClient { ApiKey = apiKey };
+        _client = new AnthropicClient
+        {
+            ApiKey = CreatorSecrets.Resolve(settings.Anthropic.ApiKey, envFallback: "ANTHROPIC_API_KEY"),
+        };
     }
 
     public async Task<ContentScript> GenerateAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default)
