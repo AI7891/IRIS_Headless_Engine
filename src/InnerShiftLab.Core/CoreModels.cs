@@ -92,12 +92,22 @@ public sealed class PostSlot
     public string? Error { get; set; }
 }
 
+/// <summary>
+/// An official OAuth token set obtained through the platform's own authorization
+/// flow. This is the only credential shape the vault stores — session cookies,
+/// scraped tokens, or anything not issued by the platform's OAuth endpoint are
+/// rejected at save time.
+/// </summary>
 public sealed class TokenSet
 {
     public string AccessToken { get; set; } = "";
     public string TokenType { get; set; } = "Bearer";
     public string? RefreshToken { get; set; }
     public DateTimeOffset ExpiresAt { get; set; } = DateTimeOffset.UtcNow.AddHours(1);
+    /// <summary>OAuth scopes granted with this token (as returned/requested in the flow).</summary>
+    public string[] Scopes { get; set; } = Array.Empty<string>();
+    /// <summary>When the token was obtained — used to reason about refresh windows.</summary>
+    public DateTimeOffset IssuedAt { get; set; } = DateTimeOffset.UtcNow;
     public string? PageAccessToken { get; set; }
     public string? PageId { get; set; }
     public string? IgBusinessId { get; set; }

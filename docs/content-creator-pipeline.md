@@ -39,7 +39,7 @@ YouTube) receive the composed slideshow video with the voiceover track.
 |---|---|---|
 | `POST /api/creator/script` | `{ "keywords"?, "slideCount"? }` | Stage 1 only — returns the generated script |
 | `POST /api/creator/run` | `{ "keywords"?, "slideCount"? }` | Full pipeline — returns `ComposedContent` (no publishing) |
-| `POST /api/creator/publish` | `{ "keywords"?, "platforms": ["instagram","tiktok",...] }` | Full pipeline, then publishes via the existing provider backend and logs monetization |
+| `POST /api/creator/draft` | `{ "keywords"?, "platforms": ["instagram","tiktok",...] }` | Full pipeline, then creates `PendingApproval` drafts per platform — approve via `/api/drafts` before anything is published (see `docs/queue-and-approve.md`) |
 
 Omitted `keywords` fall back to the configured default topic.
 

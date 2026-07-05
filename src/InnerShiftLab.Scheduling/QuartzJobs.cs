@@ -39,19 +39,27 @@ public sealed class HeartbeatJob : IJob
     }
 }
 
+/// <summary>
+/// The scheduled content job. It keeps all the content-prep value — auto-curation,
+/// per-platform caption formatting (UTM links from the IRIS engine), media rendering,
+/// daily caps — but it never publishes. Its final stage produces a ready-to-post
+/// draft per (slot, platform) and marks it PendingApproval in SQLite; a human must
+/// approve each draft before anything can reach a platform API.
+/// </summary>
 [DisallowConcurrentExecution]
-public sealed class DailyPostJob : IJob
+public sealed class DailyDraftJob : IJob
 {
     private readonly IIrisEngine _engine;
-    private readonly IProviderRouter _router;
-    private readonly IMonetizationLogger _mon;
+    private readonly IDraftRepository _drafts;
+    private readonly IContentRenderer _renderer;
     private readonly IRepository _repo;
     private readonly IrisSettings _settings;
-    private readonly ILogger<DailyPostJob> _log;
+    private readonly ILogger<DailyDraftJob> _log;
 
-    public DailyPostJob(IIrisEngine engine, IProviderRouter router, IMonetizationLogger mon, IRepository repo, IrisSettings settings, ILogger<DailyPostJob> log)
+    public DailyDraftJob(IIrisEngine engine, IDraftRepository drafts, IContentRenderer renderer,
+        IRepository repo, IrisSettings settings, ILogger<DailyDraftJob> log)
     {
-        _engine = engine; _router = router; _mon = mon; _repo = repo; _settings = settings; _log = log;
+        _engine = engine; _drafts = drafts; _renderer = renderer; _repo = repo; _settings = settings; _log = log;
     }
 
     public async Task Execute(IJobExecutionContext context)
@@ -61,7 +69,7 @@ public sealed class DailyPostJob : IJob
             var queued = _engine.GetCurrentQueue();
             if (queued.Count == 0)
             {
-                _log.LogInformation("DailyPost: no queued slots, auto-curating from top hooks");
+                _log.LogInformation("DailyDraft: no queued slots, auto-curating from top hooks");
                 var top = _engine.GetAllHooks()
                     .OrderByDescending(h => h.Score)
                     .Take(3)
@@ -73,72 +81,58 @@ public sealed class DailyPostJob : IJob
                 queued = _engine.GetCurrentQueue();
             }
 
-            // Enforce MaxPostsPerDayPerPlatform: seed today's counts from what was already published.
-            var publishedToday = await _repo.GetPublishedTodayAsync();
-            var perPlatformCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var p in publishedToday)
-                foreach (var plat in p.Platforms)
-                    perPlatformCount[plat] = perPlatformCount.GetValueOrDefault(plat) + 1;
             var max = Math.Max(0, _settings.MaxPostsPerDayPerPlatform);
 
-            foreach (var slot in queued)
+            foreach (var slot in queued.ToList())
             {
                 try
                 {
-                    var req = new PublishRequest(slot.HookId, slot.Pillar.ToString(), slot.Caption, slot.MediaUrl);
-                    var anyPublished = false;
+                    // Content prep is unchanged: make sure the slot has media before drafting.
+                    slot.MediaUrl ??= await _renderer.RenderImageAsync(slot.Caption);
+
+                    var anyDrafted = false;
                     var anySkippedByCap = false;
                     foreach (var platform in slot.Platforms)
                     {
-                        if (perPlatformCount.GetValueOrDefault(platform) >= max)
+                        // The daily cap now limits drafts created per platform per day,
+                        // so the approval queue can't silently pile up.
+                        if (await _drafts.CountCreatedTodayAsync(platform) >= max)
                         {
                             anySkippedByCap = true;
-                            _log.LogInformation("Skipping {Platform} for hook {Hook}: daily cap ({Max}) reached",
+                            _log.LogInformation("Skipping {Platform} draft for hook {Hook}: daily cap ({Max}) reached",
                                 platform, slot.HookId, max);
                             continue;
                         }
-                        try
+
+                        var draft = await _drafts.CreateAsync(new PostDraft
                         {
-                            var published = await _router.PublishAsync(platform, req);
-                            slot.PerPlatformPostIds = slot.PerPlatformPostIds.Concat(published.PerPlatformPostIds).ToArray();
-                            slot.PerPlatformUrls = slot.PerPlatformUrls.Concat(published.PerPlatformUrls).ToArray();
-                            perPlatformCount[platform] = perPlatformCount.GetValueOrDefault(platform) + 1;
-                            anyPublished = true;
-                            _log.LogInformation("Published to {Platform}: {Url}",
-                                platform, published.PerPlatformUrls.FirstOrDefault());
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.LogError(ex, "Publish to {Platform} failed for hook {Hook}",
-                                platform, slot.HookId);
-                        }
+                            Platform = platform,
+                            Caption = slot.Caption,
+                            MediaReference = slot.MediaUrl ?? "",
+                            ScheduledFor = slot.ScheduledAt,
+                            Status = DraftStatus.PendingApproval,
+                        });
+                        anyDrafted = true;
+                        _log.LogInformation("Draft {Id} created for {Platform} (hook {Hook}) — awaiting approval",
+                            draft.Id, platform, slot.HookId);
                     }
 
-                    if (anyPublished)
+                    if (anyDrafted)
                     {
-                        slot.Status = PostStatus.Published;
-                        _engine.MarkPublished(slot);
-                        // Slot is done — remove from the in-memory queue so it isn't re-published next run.
+                        // The slot's job is done once drafts exist; publishing is a human decision.
+                        slot.Status = PostStatus.Draft;
                         _engine.RemoveFromQueue(slot);
+                        await _repo.SavePostAsync(slot);
                     }
                     else if (anySkippedByCap)
                     {
-                        // Nothing published only because of the daily cap: leave queued for a later run.
+                        // Drafting only blocked by the daily cap: leave queued for a later run.
                         slot.Status = PostStatus.Queued;
                     }
-                    else
-                    {
-                        slot.Status = PostStatus.Failed;
-                        _engine.MarkFailed(slot, "All platform publishes failed");
-                        _engine.RemoveFromQueue(slot);
-                    }
-
-                    await _mon.LogPostAsync(slot);
-                    await _repo.SavePostAsync(slot);
                 }
                 catch (Exception ex)
                 {
-                    _log.LogError(ex, "Slot {Slot} failed end-to-end", slot.SlotId);
+                    _log.LogError(ex, "Slot {Slot} draft prep failed", slot.SlotId);
                     _engine.MarkFailed(slot, ex.Message);
                     _engine.RemoveFromQueue(slot);
                 }
@@ -146,7 +140,7 @@ public sealed class DailyPostJob : IJob
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "DailyPost job crashed");
+            _log.LogError(ex, "DailyDraft job crashed");
         }
     }
 }

@@ -9,6 +9,7 @@
 using InnerShiftLab.Auth;
 using InnerShiftLab.ContentCreator;
 using InnerShiftLab.Core;
+using InnerShiftLab.Drafts;
 using InnerShiftLab.Engine;
 using InnerShiftLab.Monetization;
 using InnerShiftLab.Providers;
@@ -101,6 +102,11 @@ try
     connString = AppPaths.ResolveConnectionString(connString, appRoot);
     builder.Services.AddSingleton<IRepository>(_ => new SqliteRepository(connString));
 
+    // Draft approval queue — same iris.db; every scheduled/creator output lands here
+    // as PendingApproval and needs explicit human approval before any API publish.
+    builder.Services.AddSingleton<IDraftRepository>(_ => new SqliteDraftRepository(connString));
+    builder.Services.AddSingleton<IDraftService, DraftService>();
+
     // HTTP clients (named, so we can apply per-provider policies)
     builder.Services.AddHttpClient("meta",     c => { c.Timeout = TimeSpan.FromSeconds(30); });
     builder.Services.AddHttpClient("tiktok",   c => { c.Timeout = TimeSpan.FromSeconds(60); });
@@ -161,12 +167,13 @@ try
             .WithIdentity("heartbeat-trigger")
             .WithSimpleSchedule(s => s.WithIntervalInMinutes(10).RepeatForever()));
 
-        // Daily content slot: 09:00 UTC (≈ 11:00 CET — peak European engagement window)
-        var dailyPost = JobKey.Create("daily-post");
-        q.AddJob<DailyPostJob>(h => h.WithIdentity(dailyPost).StoreDurably());
+        // Daily content slot: 09:00 UTC (≈ 11:00 CET — peak European engagement window).
+        // The job only PREPARES drafts (PendingApproval); it never publishes.
+        var dailyDraft = JobKey.Create("daily-draft");
+        q.AddJob<DailyDraftJob>(h => h.WithIdentity(dailyDraft).StoreDurably());
         q.AddTrigger(t => t
-            .ForJob(dailyPost)
-            .WithIdentity("daily-post-trigger")
+            .ForJob(dailyDraft)
+            .WithIdentity("daily-draft-trigger")
             .WithCronSchedule("0 0 9 * * ?", b => b.InTimeZone(TimeZoneInfo.Utc)));
 
         // Token refresh sweep: hourly — refresh any expiring Meta/TikTok/YouTube tokens
@@ -198,6 +205,10 @@ try
     {
         var repo = scope.ServiceProvider.GetRequiredService<IRepository>();
         await repo.InitAsync();
+        // Migration 002: PostDrafts approval queue (idempotent; rollback in
+        // scripts/migrations/002_post_drafts.down.sql)
+        var draftRepo = scope.ServiceProvider.GetRequiredService<IDraftRepository>();
+        await draftRepo.InitAsync();
     }
 
     app.UseSerilogRequestLogging();
@@ -230,20 +241,47 @@ try
         return Results.Ok(slot);
     });
 
-    // Provider endpoints — proxy to platform APIs
+    // Provider endpoints — token status only. The old direct-publish endpoint is
+    // intentionally gone: nothing reaches a platform API without an approved draft.
     app.MapGet("/api/providers/status", async (IProviderRouter r) =>
         Results.Ok(await r.GetStatusAsync()));
 
-    app.MapPost("/api/providers/{platform}/publish", async (
-        string platform,
-        PublishRequest req,
-        IProviderRouter r,
-        IMonetizationLogger m) =>
+    // Draft approval queue — the human-in-the-loop control plane.
+    // Flow: PendingApproval -> approve/reject; approved drafts -> publish (official
+    // API, only if OAuth is configured) or export (manual posting package).
+    app.MapGet("/api/drafts", async (string? status, int? limit, IDraftService d) =>
     {
-        var post = await r.PublishAsync(platform, req);
-        await m.LogPostAsync(post);
-        return Results.Ok(post);
+        DraftStatus? filter = null;
+        if (!string.IsNullOrEmpty(status) && !status.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!Enum.TryParse<DraftStatus>(status, ignoreCase: true, out var parsed))
+                return Results.BadRequest($"Unknown status '{status}'. Expected one of: {string.Join(", ", Enum.GetNames<DraftStatus>())}, or 'all'.");
+            filter = parsed;
+        }
+        else if (string.IsNullOrEmpty(status))
+        {
+            filter = DraftStatus.PendingApproval;  // default view: what needs my decision
+        }
+        return Results.Ok(await d.ListAsync(filter, limit ?? 100));
     });
+
+    app.MapGet("/api/drafts/{id:long}", async (long id, IDraftService d) =>
+        await d.GetAsync(id) is { } draft ? Results.Ok(draft) : Results.NotFound());
+
+    app.MapPost("/api/drafts/{id:long}/approve", async (long id, IDraftService d) =>
+        Results.Ok(await d.ApproveAsync(id)));
+
+    app.MapPost("/api/drafts/{id:long}/reject", async (long id, IDraftService d) =>
+        Results.Ok(await d.RejectAsync(id)));
+
+    app.MapPost("/api/drafts/{id:long}/retry", async (long id, IDraftService d) =>
+        Results.Ok(await d.RetryAsync(id)));
+
+    app.MapPost("/api/drafts/{id:long}/publish", async (long id, IDraftService d) =>
+        Results.Ok(await d.PublishAsync(id)));
+
+    app.MapPost("/api/drafts/{id:long}/export", async (long id, IDraftService d) =>
+        Results.Ok(await d.ExportAsync(id)));
 
     // Auth endpoints — full Meta OAuth + state mgmt
     app.MapGet("/auth/meta/login",    (IMetaProvider m) =>
@@ -326,11 +364,13 @@ try
     app.MapPost("/api/creator/run", async (CreatorRequest? req, IContentCreationPipeline p, CancellationToken ct) =>
         Results.Ok(await p.CreateAsync(req?.Keywords, req?.SlideCount, ct)));
 
-    app.MapPost("/api/creator/publish", async (CreatorPublishRequest req, IContentCreationPipeline p, CancellationToken ct) =>
+    // Creates PendingApproval drafts (replaces the old direct-publish endpoint):
+    // approve them via /api/drafts before anything can be published.
+    app.MapPost("/api/creator/draft", async (CreatorPublishRequest req, IContentCreationPipeline p, CancellationToken ct) =>
     {
         if (req.Platforms is null || req.Platforms.Length == 0)
             return Results.BadRequest("Provide at least one platform (instagram, facebook, tiktok, youtube).");
-        return Results.Ok(await p.CreateAndPublishAsync(req.Keywords, req.Platforms, ct));
+        return Results.Ok(await p.CreateDraftsAsync(req.Keywords, req.Platforms, ct));
     });
 
     // Monetization reporting — for KPI tracking

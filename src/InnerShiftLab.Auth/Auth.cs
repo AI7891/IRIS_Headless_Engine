@@ -17,15 +17,51 @@ public interface ITokenVault
     Task<string?> LoadRawAsync(string provider);
 }
 
+/// <summary>
+/// The OAuth scopes each provider's official API requires for publishing. Used to
+/// validate what the vault stores and to tell the operator exactly what to grant
+/// during the OAuth consent screen. Publishing never uses anything beyond these.
+/// </summary>
+public static class OAuthScopes
+{
+    public static readonly IReadOnlyDictionary<string, string[]> RequiredForPublish =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Meta Graph API — page + IG content publishing
+            ["meta"] = new[]
+            {
+                "pages_show_list", "pages_manage_posts",
+                "instagram_basic", "instagram_content_publish",
+            },
+            // TikTok Content Posting API
+            ["tiktok"] = new[] { "user.info.basic", "video.publish" },
+            // YouTube Data API v3 upload
+            ["youtube"] = new[] { "https://www.googleapis.com/auth/youtube.upload" },
+        };
+
+    public static string[] For(string provider) =>
+        RequiredForPublish.TryGetValue(provider, out var scopes) ? scopes : Array.Empty<string>();
+}
+
+/// <summary>
+/// Encrypted-at-rest store for official OAuth tokens only. Tokens must be Bearer
+/// tokens obtained via the platform's own OAuth flow; anything else (session
+/// cookies, scraped credentials) is rejected. Refresh handling: refresh tokens
+/// are stored alongside access tokens, expiry is tracked via ExpiresAt/IssuedAt,
+/// and the providers/TokenRefreshJob use them to renew access through the
+/// official token endpoints.
+/// </summary>
 public sealed class TokenVault : ITokenVault
 {
     private readonly string _keyDir;
     private readonly byte[] _encryptionKey;
+    private readonly ILogger<TokenVault>? _log;
 
-    public TokenVault(IWebHostEnvironment env)
+    public TokenVault(IWebHostEnvironment env, ILogger<TokenVault>? log = null)
     {
         _keyDir = AppPaths.DataDir(AppPaths.ResolveRoot(env.ContentRootPath));
         _encryptionKey = LoadOrCreateKey(Path.Combine(_keyDir, "vault.key"));
+        _log = log;
     }
 
     private static byte[] LoadOrCreateKey(string path)
@@ -43,6 +79,32 @@ public sealed class TokenVault : ITokenVault
 
     public async Task SaveTokensAsync(string provider, TokenSet tokens)
     {
+        // Only official OAuth bearer tokens are storable. This is the hard line that
+        // keeps the tool inside platform terms: no session-token replay, no scraped
+        // cookies, no impersonation credentials.
+        if (string.IsNullOrWhiteSpace(tokens.AccessToken))
+            throw new InvalidOperationException("Refusing to store an empty access token.");
+        if (!string.Equals(tokens.TokenType, "Bearer", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Refusing to store a '{tokens.TokenType}' credential for {provider}. " +
+                "The vault only holds Bearer tokens issued by the platform's official OAuth flow.");
+
+        var required = OAuthScopes.For(provider);
+        if (required.Length > 0)
+        {
+            var missing = required.Where(s => !tokens.Scopes.Contains(s, StringComparer.OrdinalIgnoreCase)).ToArray();
+            if (tokens.Scopes.Length == 0)
+                _log?.LogWarning("{Provider} token saved without scope metadata. Publishing requires: {Scopes}",
+                    provider, string.Join(", ", required));
+            else if (missing.Length > 0)
+                _log?.LogWarning("{Provider} token is missing publish scopes: {Missing}. Re-run the OAuth flow granting them.",
+                    provider, string.Join(", ", missing));
+        }
+
+        if (string.IsNullOrEmpty(tokens.RefreshToken))
+            _log?.LogWarning("{Provider} token has no refresh token; access ends at {Expiry} until re-auth.",
+                provider, tokens.ExpiresAt);
+
         var json = JsonConvert.SerializeObject(tokens);
         var encrypted = Encrypt(json);
         var path = Path.Combine(_keyDir, $"{provider}.tok");

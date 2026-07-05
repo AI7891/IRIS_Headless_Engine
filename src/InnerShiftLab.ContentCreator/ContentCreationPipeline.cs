@@ -1,19 +1,18 @@
 // =============================================================================
 //  Content creation pipeline — orchestrates the four stages end to end:
 //  1. AI script (Claude)  2. carousel images (Pexels)  3. voiceover (ElevenLabs)
-//  4. compose (ffmpeg) — and hands the bound output to the existing publish
-//  backend (ProviderRouter + MonetizationLogger).
+//  4. compose (ffmpeg) — then hands the bound output to the approval queue as
+//  PendingApproval drafts. Nothing produced here is ever published without an
+//  explicit human approval (see InnerShiftLab.Drafts.DraftService).
 // =============================================================================
 using InnerShiftLab.Core;
-using InnerShiftLab.Monetization;
-using InnerShiftLab.Providers;
 
 namespace InnerShiftLab.ContentCreator;
 
 public interface IContentCreationPipeline
 {
     Task<ComposedContent> CreateAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default);
-    Task<IReadOnlyList<PostSlot>> CreateAndPublishAsync(string? keywords, string[] platforms, CancellationToken ct = default);
+    Task<IReadOnlyList<PostDraft>> CreateDraftsAsync(string? keywords, string[] platforms, CancellationToken ct = default);
 }
 
 public sealed class ContentCreationPipeline : IContentCreationPipeline
@@ -22,16 +21,14 @@ public sealed class ContentCreationPipeline : IContentCreationPipeline
     private readonly IImageFetcher _images;
     private readonly IVoiceSynthesizer _voice;
     private readonly IContentComposer _composer;
-    private readonly IProviderRouter _router;
-    private readonly IMonetizationLogger _monetization;
+    private readonly IDraftRepository _drafts;
     private readonly ILogger<ContentCreationPipeline> _log;
 
     public ContentCreationPipeline(IScriptGenerator scripts, IImageFetcher images, IVoiceSynthesizer voice,
-        IContentComposer composer, IProviderRouter router, IMonetizationLogger monetization,
-        ILogger<ContentCreationPipeline> log)
+        IContentComposer composer, IDraftRepository drafts, ILogger<ContentCreationPipeline> log)
     {
         _scripts = scripts; _images = images; _voice = voice; _composer = composer;
-        _router = router; _monetization = monetization; _log = log;
+        _drafts = drafts; _log = log;
     }
 
     public async Task<ComposedContent> CreateAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default)
@@ -46,10 +43,10 @@ public sealed class ContentCreationPipeline : IContentCreationPipeline
         return await _composer.ComposeAsync(script, slides, audio, ct);
     }
 
-    public async Task<IReadOnlyList<PostSlot>> CreateAndPublishAsync(string? keywords, string[] platforms, CancellationToken ct = default)
+    public async Task<IReadOnlyList<PostDraft>> CreateDraftsAsync(string? keywords, string[] platforms, CancellationToken ct = default)
     {
         var content = await CreateAsync(keywords, ct: ct);
-        var posts = new List<PostSlot>();
+        var created = new List<PostDraft>();
         foreach (var platform in platforms)
         {
             // Image-first platforms get the lead carousel image; video platforms get
@@ -58,16 +55,17 @@ public sealed class ContentCreationPipeline : IContentCreationPipeline
                 ? content.SlideImagePaths.FirstOrDefault() ?? content.VideoPath
                 : content.VideoPath;
 
-            var post = await _router.PublishAsync(platform, new PublishRequest(
-                HookId: $"creator-{content.ScriptId}",
-                Pillar: nameof(Pillar.Integrate),
-                Caption: content.Caption,
-                MediaUrl: media));
-            await _monetization.LogPostAsync(post);
-            posts.Add(post);
-            _log.LogInformation("Published creator content {ScriptId} to {Platform}: {PostId}",
-                content.ScriptId, platform, post.PerPlatformPostIds.FirstOrDefault());
+            var draft = await _drafts.CreateAsync(new PostDraft
+            {
+                Platform = platform,
+                Caption = content.Caption,
+                MediaReference = media,
+                Status = DraftStatus.PendingApproval,
+            });
+            created.Add(draft);
+            _log.LogInformation("Creator content {ScriptId} drafted for {Platform} as draft {Id} — awaiting approval",
+                content.ScriptId, platform, draft.Id);
         }
-        return posts;
+        return created;
     }
 }
