@@ -15,7 +15,7 @@
 set -u
 
 # --- EDIT THIS ---------------------------------------------------------------
-export IRIS_URL="https://YOUR-CODESPACE-5000.app.github.dev"
+export IRIS_URL="https://crispy-winner-9g6w6x5jqg5hpg5v.github.dev/"
 export INTERVAL="600"
 HEARTBEAT="$HOME/iris/termux-heartbeat.sh"
 NOTIFIER="$HOME/iris/termux-outbox-notify.sh"
