@@ -64,8 +64,26 @@ public class OutboxPackageBuilderTests : IDisposable
         {
             var captionFile = Path.Combine(package.PackageDir, item.Platform, "caption.txt");
             Assert.True(File.Exists(captionFile));
-            Assert.Contains("utm_campaign=hook-01", await File.ReadAllTextAsync(captionFile));
+            // Link-in-bio platforms carry the tracking link in link.txt instead of the caption.
+            var format = PlatformFormats.Get(item.Platform);
+            var attributedFile = format.LinkInBio
+                ? Path.Combine(package.PackageDir, item.Platform, "link.txt")
+                : captionFile;
+            Assert.Contains("utm_campaign=hook-01", await File.ReadAllTextAsync(attributedFile));
         }
+    }
+
+    [Fact]
+    public async Task Build_InstagramGetsLinkFileAndBioCta_OthersDoNot()
+    {
+        var package = await Builder().BuildAsync(Slot());
+
+        var igDir = Path.Combine(package.PackageDir, "instagram");
+        Assert.True(File.Exists(Path.Combine(igDir, "link.txt")));
+        Assert.Contains("utm_source=instagram", await File.ReadAllTextAsync(Path.Combine(igDir, "link.txt")));
+        Assert.Contains(PlatformFormatter.LinkInBioCta,
+            await File.ReadAllTextAsync(Path.Combine(igDir, "caption.txt")));
+        Assert.False(File.Exists(Path.Combine(package.PackageDir, "facebook", "link.txt")));
     }
 
     [Fact]

@@ -85,6 +85,10 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
             await File.WriteAllTextAsync(Path.Combine(platformDir, "caption.txt"), variant.Caption, ct);
             if (variant.Title.Length > 0)
                 await File.WriteAllTextAsync(Path.Combine(platformDir, "title.txt"), variant.Title, ct);
+            // Non-clickable-caption platforms: the caption carries a bio CTA, so ship
+            // the tracking link separately for the operator to wire into the bio/Linktree.
+            if (format.LinkInBio && variant.Link.Length > 0)
+                await File.WriteAllTextAsync(Path.Combine(platformDir, "link.txt"), variant.Link, ct);
 
             var item = new OutboxItem
             {
@@ -120,6 +124,7 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
                 media = Path.GetRelativePath(packageDir, i.MediaPath).Replace('\\', '/'),
                 captionFile = $"{i.Platform}/caption.txt",
                 titleFile = i.Title.Length > 0 ? $"{i.Platform}/title.txt" : null,
+                linkFile = File.Exists(Path.Combine(packageDir, i.Platform, "link.txt")) ? $"{i.Platform}/link.txt" : null,
                 confirmEndpoint = $"/api/outbox/{slot.SlotId}/{i.Platform}/confirm",
             }),
         };

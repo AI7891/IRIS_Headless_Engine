@@ -15,18 +15,21 @@ public sealed record PlatformFormat(
     int CaptionMaxChars,
     int MaxHashtags,
     bool PrefersVideo,
-    int TitleMaxChars);
+    int TitleMaxChars,
+    bool LinkInBio);
 
 public static class PlatformFormats
 {
     // Caption limits are the platform hard limits; hashtag counts are the
-    // engagement sweet spots, not the maximums.
+    // engagement sweet spots, not the maximums. LinkInBio marks platforms whose
+    // captions are not clickable: a raw URL there is dead weight, so the caption
+    // carries a bio call-to-action and the link ships separately (link.txt).
     public static readonly IReadOnlyList<PlatformFormat> All = new[]
     {
-        new PlatformFormat("instagram", 1080, 1350, 2200,  8, PrefersVideo: false, TitleMaxChars: 0),
-        new PlatformFormat("facebook",  1080, 1350, 63206, 3, PrefersVideo: false, TitleMaxChars: 0),
-        new PlatformFormat("tiktok",    1080, 1920, 2200,  5, PrefersVideo: true,  TitleMaxChars: 0),
-        new PlatformFormat("youtube",   1080, 1920, 5000,  3, PrefersVideo: true,  TitleMaxChars: 100),
+        new PlatformFormat("instagram", 1080, 1350, 2200,  8, PrefersVideo: false, TitleMaxChars: 0,   LinkInBio: true),
+        new PlatformFormat("facebook",  1080, 1350, 63206, 3, PrefersVideo: false, TitleMaxChars: 0,   LinkInBio: false),
+        new PlatformFormat("tiktok",    1080, 1920, 2200,  5, PrefersVideo: true,  TitleMaxChars: 0,   LinkInBio: false),
+        new PlatformFormat("youtube",   1080, 1920, 5000,  3, PrefersVideo: true,  TitleMaxChars: 100, LinkInBio: false),
     };
 
     public static PlatformFormat Get(string platform)
@@ -35,16 +38,25 @@ public static class PlatformFormats
                $"Unknown platform '{platform}'. Expected one of: {string.Join(", ", All.Select(f => f.Platform))}");
 }
 
-/// <summary>One platform-ready caption + title, paired with its format spec.</summary>
-public sealed record PlatformVariant(PlatformFormat Format, string Caption, string Title);
+/// <summary>
+/// One platform-ready caption + title, paired with its format spec. <see cref="Link"/>
+/// is the platform-stamped tracking link; on LinkInBio platforms it is NOT inside
+/// the caption (the caption carries a bio call-to-action instead) — the operator
+/// points the bio/Linktree at it, or drops it in the first comment.
+/// </summary>
+public sealed record PlatformVariant(PlatformFormat Format, string Caption, string Title, string Link);
 
 public static class PlatformFormatter
 {
+    /// <summary>Call-to-action used instead of a raw URL on platforms with non-clickable captions.</summary>
+    public const string LinkInBioCta = "🔗 Link in bio →";
+
     /// <summary>
     /// Reshapes an engine-built caption for one platform: caps the hashtag count,
     /// trims the body to the platform's caption limit (link and hashtags survive
     /// trimming untouched), stamps utm_source with the platform name so manual
     /// posts stay attributable per platform, and derives a title where needed.
+    /// On LinkInBio platforms the dead in-caption URL is replaced by a bio CTA.
     /// </summary>
     public static PlatformVariant Format(string platform, string hookText, string caption)
     {
@@ -54,12 +66,19 @@ public static class PlatformFormatter
 
         var keptTags = hashtags.Take(format.MaxHashtags).ToList();
         var tail = new List<string>();
-        tail.AddRange(links);
+        if (format.LinkInBio)
+        {
+            if (links.Count > 0) tail.Add(LinkInBioCta);
+        }
+        else
+        {
+            tail.AddRange(links);
+        }
         if (keptTags.Count > 0) tail.Add(string.Join(" ", keptTags));
 
         var finalCaption = Assemble(body, tail, format.CaptionMaxChars);
         var title = format.TitleMaxChars > 0 ? Truncate(hookText, format.TitleMaxChars) : "";
-        return new PlatformVariant(format, finalCaption, title);
+        return new PlatformVariant(format, finalCaption, title, links.FirstOrDefault() ?? "");
     }
 
     /// <summary>

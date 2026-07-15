@@ -13,6 +13,9 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
    - Open `caption.txt`, copy all → open the platform app → create post → paste
    - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
    - YouTube also gets `title.txt` as the video title
+   - **Instagram**: the caption says `🔗 Link in bio →` — point your bio/Linktree
+     button at the URL in `instagram/link.txt` (or paste it as the first comment)
+     so IG joins keep their hook + platform attribution
    - **Don't edit the link in the caption** — it carries the UTM attribution
 4. **Confirm each post** as you go:
    `POST /api/outbox/{packageId}/{platform}/confirm` with body `{"postUrl":"..."}`

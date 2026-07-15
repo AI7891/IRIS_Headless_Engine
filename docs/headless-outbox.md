@@ -46,6 +46,13 @@ Every day at **09:00 UTC** the `DailyOutboxJob` runs (or trigger it any time wit
    variant's link is stamped with `utm_source=<platform>`, so a Skool join traces
    back to *both* the hook (`utm_campaign`) and the platform it was posted on —
    `/api/monetization/summary` reports a `byPlatform` breakdown.
+
+   **Instagram special case**: IG captions are not clickable, so a raw URL there
+   is dead weight. The IG caption carries `🔗 Link in bio →` instead, and the
+   stamped link ships as `instagram/link.txt`. To keep IG attribution, point the
+   bio/Linktree button at that link (or paste it into the post's first comment).
+   If the bio just stays on the plain Linktree URL, IG joins still count — they
+   arrive without a hook/platform UTM.
 3. **Persist to the `outbox` table** in SQLite (source of truth). Item lifecycle:
    `Pending → Exported → Posted` (or `Skipped`).
 4. **Export the package** — media + `caption.txt` (+ `title.txt` for YouTube) +
@@ -67,7 +74,7 @@ the UTM link lives inside the caption text the operator pastes.
 ```
 output/outbox/2026-07-15/<packageId>/
 ├── manifest.json          # hook, pillar, per-platform files, confirm endpoints
-├── instagram/  caption.txt · media.png
+├── instagram/  caption.txt · link.txt (bio link) · media.png
 ├── facebook/   caption.txt · media.png
 ├── tiktok/     caption.txt · media.mp4 (media.png fallback)
 └── youtube/    caption.txt · title.txt · media.mp4 (media.png fallback)
