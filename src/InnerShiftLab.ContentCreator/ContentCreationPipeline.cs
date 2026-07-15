@@ -22,12 +22,14 @@ public sealed class ContentCreationPipeline : IContentCreationPipeline
     private readonly IImageFetcher _images;
     private readonly IVoiceSynthesizer _voice;
     private readonly IContentComposer _composer;
-    private readonly IProviderRouter _router;
+    private readonly IProviderRouter? _router;
     private readonly IMonetizationLogger _monetization;
     private readonly ILogger<ContentCreationPipeline> _log;
 
+    // The router is null when Features:AutoPublish is off — content creation still
+    // works, but CreateAndPublishAsync is quarantined along with the providers.
     public ContentCreationPipeline(IScriptGenerator scripts, IImageFetcher images, IVoiceSynthesizer voice,
-        IContentComposer composer, IProviderRouter router, IMonetizationLogger monetization,
+        IContentComposer composer, IProviderRouter? router, IMonetizationLogger monetization,
         ILogger<ContentCreationPipeline> log)
     {
         _scripts = scripts; _images = images; _voice = voice; _composer = composer;
@@ -48,6 +50,10 @@ public sealed class ContentCreationPipeline : IContentCreationPipeline
 
     public async Task<IReadOnlyList<PostSlot>> CreateAndPublishAsync(string? keywords, string[] platforms, CancellationToken ct = default)
     {
+        if (_router == null)
+            throw new InvalidOperationException(
+                "Automated publishing is disabled (Features:AutoPublish=false). Use the outbox workflow: POST /api/outbox/build.");
+
         var content = await CreateAsync(keywords, ct: ct);
         var posts = new List<PostSlot>();
         foreach (var platform in platforms)

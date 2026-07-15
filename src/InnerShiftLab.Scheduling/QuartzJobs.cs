@@ -1,9 +1,12 @@
 // =============================================================================
-//  Quartz jobs — heartbeat, daily post, token refresh, webhook sweep
+//  Quartz jobs — heartbeat, daily outbox, webhook sweep; plus the quarantined
+//  auto-publish jobs (daily post, token refresh) that only run when
+//  Features:AutoPublish is enabled.
 // =============================================================================
 using InnerShiftLab.Core;
 using InnerShiftLab.Engine;
 using InnerShiftLab.Monetization;
+using InnerShiftLab.Outbox;
 using InnerShiftLab.Providers;
 using Microsoft.Extensions.Options;
 using Quartz;
@@ -38,6 +41,39 @@ public sealed class HeartbeatJob : IJob
         return Task.CompletedTask;
     }
 }
+
+[DisallowConcurrentExecution]
+public sealed class DailyOutboxJob : IJob
+{
+    private readonly IOutboxService _outbox;
+    private readonly ILogger<DailyOutboxJob> _log;
+
+    public DailyOutboxJob(IOutboxService outbox, ILogger<DailyOutboxJob> log)
+    {
+        _outbox = outbox; _log = log;
+    }
+
+    public async Task Execute(IJobExecutionContext context)
+    {
+        try
+        {
+            var package = await _outbox.BuildDailyPackageAsync(context.CancellationToken);
+            if (package == null)
+                _log.LogWarning("DailyOutbox: no package built (no hooks available)");
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "DailyOutbox job crashed");
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  QUARANTINED: DailyPostJob and TokenRefreshJob belong to the retired
+//  auto-publish pipeline. They are only scheduled when Features:AutoPublish is
+//  true (see Program.cs) — kept compiling so the pipeline can be re-enabled if
+//  the platform apps ever get verified.
+// -----------------------------------------------------------------------------
 
 [DisallowConcurrentExecution]
 public sealed class DailyPostJob : IJob
