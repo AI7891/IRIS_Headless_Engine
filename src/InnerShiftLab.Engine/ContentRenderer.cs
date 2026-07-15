@@ -16,7 +16,7 @@ namespace InnerShiftLab.Engine;
 
 public interface IContentRenderer
 {
-    Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default");
+    Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default", int width = 1080, int height = 1080);
     Task<string> RenderPdfAsync(string title, IEnumerable<string> sections, string? outPath = null);
     Task<string> RenderVideoAsync(string text, string backgroundPath, string? outPath = null, int durationSec = 15);
 }
@@ -32,13 +32,13 @@ public sealed class ContentRenderer : IContentRenderer
         _outputDir = AppPaths.OutputDir(AppPaths.ResolveRoot(env.ContentRootPath));
     }
 
-    public async Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default")
+    public async Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default", int width = 1080, int height = 1080)
     {
         outPath ??= Path.Combine(_outputDir, $"iris-{Guid.NewGuid():N}.png");
         Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
 
-        // 1080x1080 — IG square
-        using var img = new Image<Rgba32>(1080, 1080);
+        // Defaults to 1080x1080 (IG square); the outbox passes per-platform dimensions.
+        using var img = new Image<Rgba32>(width, height);
         var (bg, fg) = palette switch
         {
             "iris-dark" => (Color.FromRgb(15, 23, 42), Color.FromRgb(245, 158, 11)),
@@ -47,8 +47,9 @@ public sealed class ContentRenderer : IContentRenderer
         };
         img.Mutate(c => c.Fill(bg));
 
-        var lines = WrapText(text, 28);
-        var y = 200;
+        // Wrap relative to the canvas width so wider/narrower formats fill their line length.
+        var lines = WrapText(text, Math.Max(12, 28 * width / 1080));
+        var y = height / 5;
         // Resolve a font family: prefer an installed system font, otherwise load one from disk.
         var family = ResolveFontFamily();
         var font = family.CreateFont(48, SixLabors.Fonts.FontStyle.Bold);
@@ -58,7 +59,7 @@ public sealed class ContentRenderer : IContentRenderer
             img.Mutate(c => c.DrawText(line, font, fg, new PointF(60, y)));
             y += 80;
         }
-        img.Mutate(c => c.DrawText("The Inner Shift Lab · IRIS Method", smallFont, fg, new PointF(60, 980)));
+        img.Mutate(c => c.DrawText("The Inner Shift Lab · IRIS Method", smallFont, fg, new PointF(60, height - 100)));
 
         await img.SaveAsPngAsync(outPath);
         _log.LogInformation("Rendered image: {Path}", outPath);
