@@ -91,4 +91,92 @@ public class SqliteRepositoryTests : IAsyncLifetime
 
         Assert.Equal(3, (await _repo.GetConversionsAsync(3)).Count);
     }
+
+    private static OutboxItem NewOutboxItem(string packageId, string platform) => new()
+    {
+        PackageId = packageId,
+        Platform = platform,
+        HookId = "hook-01",
+        Pillar = Pillar.Reprogram,
+        Caption = "caption with utm link",
+        Title = platform == "youtube" ? "A title" : "",
+        MediaPath = $"/output/{packageId}/{platform}.png",
+        Width = 1080,
+        Height = 1350,
+    };
+
+    [Fact]
+    public async Task SaveOutboxItem_ThenGetPackage_RoundTrips()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "youtube"));
+
+        var pkg = await _repo.GetOutboxPackageAsync("pkg1");
+        Assert.Equal(2, pkg.Count);
+        var ig = Assert.Single(pkg, i => i.Platform == "instagram");
+        Assert.Equal("hook-01", ig.HookId);
+        Assert.Equal(Pillar.Reprogram, ig.Pillar);
+        Assert.Equal("caption with utm link", ig.Caption);
+        Assert.Equal(1080, ig.Width);
+        Assert.Equal(1350, ig.Height);
+        Assert.Equal(OutboxStatus.Pending, ig.Status);
+        Assert.Null(ig.PostedAt);
+        Assert.Equal("A title", Assert.Single(pkg, i => i.Platform == "youtube").Title);
+    }
+
+    [Fact]
+    public async Task SaveOutboxItem_Upserts_OnPackageAndPlatform()
+    {
+        var item = NewOutboxItem("pkg1", "instagram");
+        await _repo.SaveOutboxItemAsync(item);
+        item.Caption = "updated";
+        await _repo.SaveOutboxItemAsync(item);
+
+        var pkg = await _repo.GetOutboxPackageAsync("pkg1");
+        Assert.Equal("updated", Assert.Single(pkg).Caption);
+    }
+
+    [Fact]
+    public async Task GetOutboxItems_FiltersByStatus()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "tiktok"));
+        await _repo.MarkOutboxPostedAsync("pkg1", "tiktok", "https://tiktok.com/x");
+
+        Assert.Single(await _repo.GetOutboxItemsAsync(OutboxStatus.Pending));
+        Assert.Single(await _repo.GetOutboxItemsAsync(OutboxStatus.Posted));
+        Assert.Equal(2, (await _repo.GetOutboxItemsAsync()).Count);
+    }
+
+    [Fact]
+    public async Task MarkOutboxExported_OnlyPromotesPendingItems()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "tiktok"));
+        await _repo.MarkOutboxPostedAsync("pkg1", "tiktok", null);
+
+        var promoted = await _repo.MarkOutboxExportedAsync("pkg1", "drive://folder/abc");
+        Assert.Equal(1, promoted);
+
+        var pkg = await _repo.GetOutboxPackageAsync("pkg1");
+        var ig = Assert.Single(pkg, i => i.Platform == "instagram");
+        Assert.Equal(OutboxStatus.Exported, ig.Status);
+        Assert.Equal("drive://folder/abc", ig.ExportRef);
+        // The already-posted variant keeps its terminal status.
+        Assert.Equal(OutboxStatus.Posted, Assert.Single(pkg, i => i.Platform == "tiktok").Status);
+    }
+
+    [Fact]
+    public async Task MarkOutboxPosted_SetsUrlAndTimestamp_AndReportsMissing()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+
+        Assert.True(await _repo.MarkOutboxPostedAsync("pkg1", "instagram", "https://instagram.com/p/1"));
+        Assert.False(await _repo.MarkOutboxPostedAsync("pkg1", "facebook", null));
+
+        var ig = Assert.Single(await _repo.GetOutboxPackageAsync("pkg1"));
+        Assert.Equal(OutboxStatus.Posted, ig.Status);
+        Assert.Equal("https://instagram.com/p/1", ig.PostUrl);
+        Assert.NotNull(ig.PostedAt);
+    }
 }

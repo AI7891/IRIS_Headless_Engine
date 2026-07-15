@@ -53,4 +53,38 @@ public sealed class FakeRepository : IRepository
     public Task<IReadOnlyList<Conversion>> GetConversionsAsync(int limit)
         => Task.FromResult<IReadOnlyList<Conversion>>(
             Conversions.AsEnumerable().Reverse().Take(limit).ToList());
+
+    public readonly List<OutboxItem> Outbox = new();
+
+    public Task SaveOutboxItemAsync(OutboxItem item)
+    {
+        Outbox.RemoveAll(o => o.PackageId == item.PackageId && o.Platform == item.Platform);
+        Outbox.Add(item);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<OutboxItem>> GetOutboxItemsAsync(OutboxStatus? status = null, int limit = 100)
+        => Task.FromResult<IReadOnlyList<OutboxItem>>(
+            Outbox.Where(o => status == null || o.Status == status).Take(limit).ToList());
+
+    public Task<IReadOnlyList<OutboxItem>> GetOutboxPackageAsync(string packageId)
+        => Task.FromResult<IReadOnlyList<OutboxItem>>(
+            Outbox.Where(o => o.PackageId == packageId).ToList());
+
+    public Task<int> MarkOutboxExportedAsync(string packageId, string exportRef)
+    {
+        var pending = Outbox.Where(o => o.PackageId == packageId && o.Status == OutboxStatus.Pending).ToList();
+        foreach (var o in pending) { o.Status = OutboxStatus.Exported; o.ExportRef = exportRef; }
+        return Task.FromResult(pending.Count);
+    }
+
+    public Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl)
+    {
+        var item = Outbox.FirstOrDefault(o => o.PackageId == packageId && o.Platform == platform);
+        if (item == null) return Task.FromResult(false);
+        item.Status = OutboxStatus.Posted;
+        item.PostedAt = DateTimeOffset.UtcNow;
+        item.PostUrl = postUrl;
+        return Task.FromResult(true);
+    }
 }

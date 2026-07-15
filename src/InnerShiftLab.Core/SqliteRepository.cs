@@ -1,6 +1,6 @@
 // =============================================================================
 //  Repository — SQLite-backed persistence
-//  Tables: tokens, posts, conversions, webhooks, scheduled
+//  Tables: tokens, posts, conversions, webhooks, outbox
 // =============================================================================
 using InnerShiftLab.Core;
 using Microsoft.Data.Sqlite;
@@ -28,6 +28,13 @@ public interface IRepository
     // Conversions
     Task SaveConversionAsync(Conversion c);
     Task<IReadOnlyList<Conversion>> GetConversionsAsync(int limit);
+
+    // Outbox — human-in-the-loop packages awaiting manual posting
+    Task SaveOutboxItemAsync(OutboxItem item);
+    Task<IReadOnlyList<OutboxItem>> GetOutboxItemsAsync(OutboxStatus? status = null, int limit = 100);
+    Task<IReadOnlyList<OutboxItem>> GetOutboxPackageAsync(string packageId);
+    Task<int> MarkOutboxExportedAsync(string packageId, string exportRef);
+    Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl);
 }
 
 public sealed class SqliteRepository : IRepository, IAsyncDisposable
@@ -87,6 +94,23 @@ CREATE TABLE IF NOT EXISTS webhooks (
     source    TEXT,
     body      TEXT,
     received  TEXT
+);
+CREATE TABLE IF NOT EXISTS outbox (
+    package_id  TEXT NOT NULL,
+    platform    TEXT NOT NULL,
+    hook_id     TEXT,
+    pillar      TEXT,
+    caption     TEXT,
+    title       TEXT,
+    media_path  TEXT,
+    width       INTEGER,
+    height      INTEGER,
+    status      TEXT,
+    export_ref  TEXT,
+    created     TEXT,
+    posted_at   TEXT,
+    post_url    TEXT,
+    PRIMARY KEY (package_id, platform)
 );
 ";
         await cmd.ExecuteNonQueryAsync();
@@ -251,6 +275,116 @@ CREATE TABLE IF NOT EXISTS webhooks (
                 EventType = r.IsDBNull(4) ? "" : r.GetString(4),
                 RevenueEur = r.IsDBNull(5) ? null : (decimal?)r.GetDouble(5),
                 Timestamp = DateTimeOffset.TryParse(r.IsDBNull(6) ? null : r.GetString(6), out var dt) ? dt : DateTimeOffset.UtcNow,
+            });
+        }
+        return list;
+    }
+
+    public async Task SaveOutboxItemAsync(OutboxItem item)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"INSERT INTO outbox (package_id, platform, hook_id, pillar, caption, title, media_path, width, height, status, export_ref, created, posted_at, post_url)
+                            VALUES ($pk, $pl, $h, $pi, $c, $ti, $m, $w, $he, $st, $ex, $cr, $po, $pu)
+                            ON CONFLICT(package_id, platform) DO UPDATE SET
+                                caption=$c, title=$ti, media_path=$m, width=$w, height=$he,
+                                status=$st, export_ref=$ex, posted_at=$po, post_url=$pu";
+        cmd.Parameters.AddWithValue("$pk", item.PackageId);
+        cmd.Parameters.AddWithValue("$pl", item.Platform);
+        cmd.Parameters.AddWithValue("$h", item.HookId ?? "");
+        cmd.Parameters.AddWithValue("$pi", item.Pillar.ToString());
+        cmd.Parameters.AddWithValue("$c", item.Caption ?? "");
+        cmd.Parameters.AddWithValue("$ti", item.Title ?? "");
+        cmd.Parameters.AddWithValue("$m", item.MediaPath ?? "");
+        cmd.Parameters.AddWithValue("$w", item.Width);
+        cmd.Parameters.AddWithValue("$he", item.Height);
+        cmd.Parameters.AddWithValue("$st", item.Status.ToString());
+        cmd.Parameters.AddWithValue("$ex", (object?)item.ExportRef ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$cr", item.CreatedAt.ToString("O"));
+        cmd.Parameters.AddWithValue("$po", (object?)item.PostedAt?.ToString("O") ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$pu", (object?)item.PostUrl ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<IReadOnlyList<OutboxItem>> GetOutboxItemsAsync(OutboxStatus? status = null, int limit = 100)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        if (status.HasValue)
+        {
+            cmd.CommandText = $"SELECT {OutboxColumns} FROM outbox WHERE status=$st ORDER BY created DESC LIMIT $l";
+            cmd.Parameters.AddWithValue("$st", status.Value.ToString());
+        }
+        else
+        {
+            cmd.CommandText = $"SELECT {OutboxColumns} FROM outbox ORDER BY created DESC LIMIT $l";
+        }
+        cmd.Parameters.AddWithValue("$l", limit);
+        return await ReadOutboxItemsAsync(cmd);
+    }
+
+    public async Task<IReadOnlyList<OutboxItem>> GetOutboxPackageAsync(string packageId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT {OutboxColumns} FROM outbox WHERE package_id=$pk ORDER BY platform";
+        cmd.Parameters.AddWithValue("$pk", packageId);
+        return await ReadOutboxItemsAsync(cmd);
+    }
+
+    public async Task<int> MarkOutboxExportedAsync(string packageId, string exportRef)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        // Posted/Skipped variants keep their terminal status; only Pending ones become Exported.
+        cmd.CommandText = @"UPDATE outbox SET status=$st, export_ref=$ex
+                            WHERE package_id=$pk AND status=$pending";
+        cmd.Parameters.AddWithValue("$st", OutboxStatus.Exported.ToString());
+        cmd.Parameters.AddWithValue("$ex", exportRef);
+        cmd.Parameters.AddWithValue("$pk", packageId);
+        cmd.Parameters.AddWithValue("$pending", OutboxStatus.Pending.ToString());
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"UPDATE outbox SET status=$st, posted_at=$po, post_url=$pu
+                            WHERE package_id=$pk AND platform=$pl";
+        cmd.Parameters.AddWithValue("$st", OutboxStatus.Posted.ToString());
+        cmd.Parameters.AddWithValue("$po", DateTimeOffset.UtcNow.ToString("O"));
+        cmd.Parameters.AddWithValue("$pu", (object?)postUrl ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$pk", packageId);
+        cmd.Parameters.AddWithValue("$pl", platform);
+        return await cmd.ExecuteNonQueryAsync() > 0;
+    }
+
+    private const string OutboxColumns =
+        "package_id, platform, hook_id, pillar, caption, title, media_path, width, height, status, export_ref, created, posted_at, post_url";
+
+    private static async Task<IReadOnlyList<OutboxItem>> ReadOutboxItemsAsync(SqliteCommand cmd)
+    {
+        var list = new List<OutboxItem>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            list.Add(new OutboxItem
+            {
+                PackageId = r.GetString(0),
+                Platform = r.GetString(1),
+                HookId = r.IsDBNull(2) ? "" : r.GetString(2),
+                Pillar = Enum.TryParse<Pillar>(r.IsDBNull(3) ? "" : r.GetString(3), out var p) ? p : Pillar.Integrate,
+                Caption = r.IsDBNull(4) ? "" : r.GetString(4),
+                Title = r.IsDBNull(5) ? "" : r.GetString(5),
+                MediaPath = r.IsDBNull(6) ? "" : r.GetString(6),
+                Width = r.IsDBNull(7) ? 0 : r.GetInt32(7),
+                Height = r.IsDBNull(8) ? 0 : r.GetInt32(8),
+                Status = Enum.TryParse<OutboxStatus>(r.IsDBNull(9) ? "" : r.GetString(9), out var st) ? st : OutboxStatus.Pending,
+                ExportRef = r.IsDBNull(10) ? null : r.GetString(10),
+                CreatedAt = DateTimeOffset.TryParse(r.IsDBNull(11) ? null : r.GetString(11), out var cr) ? cr : DateTimeOffset.UtcNow,
+                PostedAt = DateTimeOffset.TryParse(r.IsDBNull(12) ? null : r.GetString(12), out var po) ? po : (DateTimeOffset?)null,
+                PostUrl = r.IsDBNull(13) ? null : r.GetString(13),
             });
         }
         return list;
