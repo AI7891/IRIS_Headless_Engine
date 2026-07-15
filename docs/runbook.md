@@ -5,21 +5,23 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 ## Morning (10 minutes)
 
 1. **Tap Healthcheck shortcut** → `GET /healthz` should return `{"status":"ok"}`
-2. **Open the Google Drive `IRIS Outbox` folder** → today's packages appeared at
-   09:00 UTC as `<date> <hookId>/` (up to `MaxPostsPerDayPerPlatform` per platform)
+2. **Open the Google Drive `IRIS Outbox` folder** → today's package(s) appeared at
+   09:00 UTC as `<date> <hookId>/` (`Outbox:PackagesPerRun` of them, default 1)
    - Not there? `GET /api/outbox` to check status, or `POST /api/outbox/build` to build now
    - Export failed earlier? `POST /api/outbox/{packageId}/export` retries it
+     (the 15-min `ExportRetryJob` also does this automatically)
 3. **Post each platform folder**, one by one:
-   - Open `caption.txt`, copy all → open the platform app → create post → paste
+   - Open `caption.txt` (YouTube: `description.txt`), copy all → platform app → paste
    - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
    - YouTube uses `title.txt` as the video title and `description.txt` as the description
-   - **Instagram**: the caption says `🔗 Link in bio →` — point your bio/Linktree
-     button at the URL in `instagram/link.txt` (or paste it as the first comment)
-     so IG joins keep their hook + platform attribution
-   - **Don't edit the link in the caption** — it carries the UTM attribution
+   - **Instagram & TikTok**: the caption leads with `🔗 Link in bio → linktr.ee` and
+     the full tracked URL sits on its own line below it — copy that URL into your
+     bio/Linktree so those joins keep their hook + platform attribution
+   - **Don't edit the link** — it carries the UTM attribution (`utm_source=<platform>`)
 4. **Confirm each post** as you go:
    `POST /api/outbox/{packageId}/{platform}/confirm` with body `{"postUrl":"..."}`
-   (the exact URLs are pre-filled per platform in the package's `manifest.json`)
+   (the exact URLs are pre-filled per platform in the package's `manifest.json`).
+   Not posting a variant? `POST /api/outbox/{packageId}/{platform}/skip`
 
 ## Midday (2 minutes)
 

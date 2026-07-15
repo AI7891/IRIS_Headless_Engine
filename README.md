@@ -189,9 +189,8 @@ All available as HTTP endpoints. Add them as Android home screen shortcuts for f
 | `POST /api/iris/enqueue` body: `{"hookId":"...","pillar":"...","platforms":[...]}` | Add to queue |
 | `GET /api/outbox` | Outbox items (`?status=exported` to see what's waiting) |
 | `GET /api/outbox/{packageId}` | One package's platform variants |
-| `POST /api/outbox/build` | Build + export today's packages now (honors `MaxPostsPerDayPerPlatform`) |
-| `POST /api/outbox/creator` | AI pipeline (script/carousel/voiceover/video) → outbox package |
-| `POST /api/outbox/{packageId}/export` | Retry a failed Drive export |
+| `POST /api/outbox/build` | Build + export the next `Outbox:PackagesPerRun` packages now |
+| `POST /api/outbox/{packageId}/export` | Retry a failed Drive export (also swept every 15 min) |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Confirm a manual post (body optional: `{"postUrl":"..."}`) |
 | `POST /api/outbox/{packageId}/{platform}/skip` | Mark a variant as deliberately not posted |
 | `GET /api/monetization/summary` | Revenue + join stats |
@@ -228,7 +227,7 @@ When the queue is empty, the top-scored hooks are auto-curated at 09:00 UTC dail
 | 7 | Last call for challenge + 15-min IG Live |
 | 8–14 | Challenge runs inside Skool · daily post · document breakthroughs |
 
-The DailyOutboxJob at 09:00 UTC packages the day's top hook for all platforms; you post it from the Drive folder. For day-specific content, edit the hook `score` field in `hooks.json` (higher = picked first).
+The DailyOutboxJob at 09:00 UTC packages the day's top hook(s) for all platforms (`Outbox:PackagesPerRun`, default 1); you post them from the Drive folder. For day-specific content, edit the hook `score` field in `hooks.json` (higher = picked first).
 
 ---
 

@@ -24,40 +24,47 @@ Every day at **09:00 UTC** the `DailyOutboxJob` runs (or trigger it any time wit
 `POST /api/outbox/build`):
 
 0. **Retry stuck exports** — any package whose earlier export failed (items still
-   `Pending`) is re-exported before anything new is built. A Drive hiccup never
-   loses a day of content.
+   `Pending`) is re-exported before anything new is built. A dedicated
+   `ExportRetryJob` also sweeps every 15 minutes. A Drive hiccup never loses a day
+   of content.
 1. **Curate** — `IIrisEngine` (untouched) picks from the queue; if empty it
-   auto-curates the top-scored hooks. Queued slots are packaged best-first until
-   `Iris:MaxPostsPerDayPerPlatform` (default 2) is reached for every platform.
-   The cap is seeded from the SQLite outbox table, so container restarts don't
-   reset it; slots over the cap stay queued.
+   auto-curates the top-scored hooks. The run builds the next
+   `Outbox:PackagesPerRun` queued slots (default **1**; one package = one hook
+   across all its platforms), best-first. Remaining slots stay queued; each
+   package builds under its own try/catch, so one failing slot never blocks the
+   rest. (`Iris:MaxPostsPerDayPerPlatform` no longer drives the outbox — it is
+   quarantined config, read only by the retired auto-publish `DailyPostJob`.)
 2. **Render one variant per platform**, each with correct dimensions, caption
    limit, and hashtag count:
 
-   | Platform  | Media               | Dimensions | Caption limit | Hashtags | Title |
-   |-----------|---------------------|------------|---------------|----------|-------|
-   | Instagram | image               | 1080×1350  | 2,200         | 8        | —     |
-   | Facebook  | image               | 1080×1350  | 63,206        | 3        | —     |
-   | TikTok    | video (image fallback) | 1080×1920 | 2,200       | 5        | —     |
-   | YouTube   | video (image fallback) | 1080×1920 | 5,000       | 3        | ≤100 chars |
+   | Platform  | Media               | Dimensions | Caption limit | Hashtags | Clickable links | Title |
+   |-----------|---------------------|------------|---------------|----------|-----------------|-------|
+   | Instagram | image               | 1080×1350  | 2,200         | 8        | no (bio)        | —     |
+   | Facebook  | image               | 1080×1350  | 63,206        | 3        | yes             | —     |
+   | TikTok    | video (image fallback) | 1080×1920 | 2,200       | 5        | no (bio)        | —     |
+   | YouTube   | video (image fallback) | 1080×1920 | 5,000       | 3        | yes             | ≤100 chars |
 
-   Overlong captions are trimmed at word boundaries — **the UTM link and hashtags
-   always survive intact**, which is what keeps Skool attribution working. Each
-   variant's link is stamped with `utm_source=<platform>`, so a Skool join traces
-   back to *both* the hook (`utm_campaign`) and the platform it was posted on —
-   `/api/monetization/summary` reports a `byPlatform` breakdown.
+   Overlong captions are trimmed at word boundaries — **the tracking link and
+   hashtags always survive intact**, which is what keeps Skool attribution working.
+   Each variant's link is rewritten with `utm_source=<platform>` and
+   `utm_medium=manual` (the engine's neutral `utm_source=iris` / `utm_medium=organic`
+   defaults are replaced), while `utm_campaign` (hook) and `utm_content` (pillar)
+   are left byte-for-byte intact. So a Skool join traces back to *both* the hook and
+   the platform it was posted on — `/api/monetization/summary` reports a `bySource`
+   (and `byPlatform`) breakdown.
 
-   **Instagram special case**: IG captions are not clickable, so a raw URL there
-   is dead weight. The IG caption carries `🔗 Link in bio →` instead, and the
-   stamped link ships as `instagram/link.txt`. To keep IG attribution, point the
-   bio/Linktree button at that link (or paste it into the post's first comment).
-   If the bio just stays on the plain Linktree URL, IG joins still count — they
-   arrive without a hook/platform UTM.
+   **Non-clickable platforms (Instagram, TikTok)**: a raw URL in the caption is
+   inert. The caption prepends `🔗 Link in bio → linktr.ee` above the full UTM URL,
+   which stays in the caption so the operator can paste it into the bio/Linktree.
+   Keep the bio link carrying `utm_source=instagram` (or `tiktok`) so those joins
+   stay attributed; a bio left on the plain Linktree URL still converts, just
+   without hook/platform UTMs.
 3. **Persist to the `outbox` table** in SQLite (source of truth). Item lifecycle:
-   `Pending → Exported → Posted` (or `Skipped`).
-4. **Export the package** — media + `caption.txt` (+ `title.txt` for YouTube) +
-   `manifest.json` — to Google Drive for phone pickup. If Drive isn't configured,
-   the package stays under `output/outbox/<date>/<packageId>/`.
+   `Pending → Exported → Posted` (or `Skipped`). The package directory is stored on
+   each row so a retry export needs no re-render.
+4. **Export the package** — media + `caption.txt` (or `title.txt` + `description.txt`
+   for YouTube) + `manifest.json` — to Google Drive for phone pickup. If Drive isn't
+   configured, the package stays under `output/outbox/<date>/<packageId>/`.
 5. **Operator posts manually** on each platform (copy caption, upload media), then
    confirms each one:
 
@@ -74,23 +81,28 @@ the UTM link lives inside the caption text the operator pastes.
 ```
 output/outbox/2026-07-15/<packageId>/
 ├── manifest.json          # hook, pillar, per-platform files, confirm endpoints
-├── instagram/  caption.txt · link.txt (bio link) · media.png
+├── instagram/  caption.txt (bio cue + URL) · media.png
 ├── facebook/   caption.txt · media.png
-├── tiktok/     caption.txt · media.mp4 (media.png fallback)
+├── tiktok/     caption.txt (bio cue + URL) · media.mp4 (media.png fallback)
 └── youtube/    title.txt · description.txt · media.mp4 (media.png fallback)
 ```
 
-The same tree is mirrored to the Drive folder, one subfolder per platform.
+The same tree is mirrored to the Drive folder (recursively, any depth), one
+subfolder per platform.
 
 ## AI creator content in the outbox
 
-`POST /api/outbox/creator` runs the full content pipeline (Claude script →
-Pexels image carousel → ElevenLabs voiceover → ffmpeg-composed video) and
-packages the result exactly like a daily package: video platforms get the
-composed mp4, image platforms get the lead carousel slide, and the AI caption
-gains a UTM-tracked link (`utm_campaign=creator-<scriptId>`) so creator posts
-show up in monetization reporting alongside hook posts. Requires the
-Anthropic/Pexels/ElevenLabs keys from `ContentCreator` settings.
+Set `Outbox:UseContentCreator: true` to render packages from the AI content
+pipeline (Anthropic script → Pexels image carousel → ElevenLabs voiceover →
+ffmpeg-composed video) instead of plain text cards. When enabled, every daily
+package calls the pipeline once with the hook text: video platforms get the
+composed mp4 re-encoded to their dimensions, image platforms get the lead
+carousel slide cover-cropped to their dimensions, YouTube's title uses the AI
+title, and the AI caption is used with the tracked link re-appended so creator
+posts stay attributable. It is **opt-in** because it spends Anthropic/Pexels/
+ElevenLabs credits and needs those keys in `ContentCreator` settings. Any
+pipeline failure logs a warning and falls back to text-card rendering — an
+external API outage never sinks the daily run.
 
 ## Google Drive setup (service account — no user OAuth)
 
@@ -125,15 +137,26 @@ export fails, the items stay `Pending`, the package remains available locally, a
 the error is logged — nothing is lost: the next daily run retries it automatically,
 or force it immediately with `POST /api/outbox/{packageId}/export`.
 
+## Outbox settings (`Outbox` section)
+
+```json
+"Outbox": {
+  "Platforms": [ "instagram", "facebook", "tiktok", "youtube" ],
+  "PackagesPerRun": 1,        // packages built per daily run (one package = one hook)
+  "RenderVideo": true,        // wrap stills into mp4 for TikTok/YouTube when ffmpeg is present
+  "UseContentCreator": false, // opt-in AI media pipeline (costs API credits; falls back to text cards)
+  "GoogleDrive": { "Enabled": false, "ServiceAccountJsonPath": "", "FolderId": "" }
+}
+```
+
 ## Endpoint reference
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/outbox?status=exported&limit=50` | List outbox items (status filter optional: pending/exported/posted/skipped) |
 | `GET /api/outbox/{packageId}` | All platform variants of one package |
-| `POST /api/outbox/build` | Retry pending exports, then build + export today's packages (array) up to the daily cap |
-| `POST /api/outbox/creator` | Run the AI pipeline (Claude script → Pexels carousel → ElevenLabs voiceover → composed video) and package its output — body optional: `{"keywords":"...","slideCount":5}` |
-| `POST /api/outbox/{packageId}/export` | Re-export one package whose export failed (idempotent; 409 if its files are gone) |
+| `POST /api/outbox/build` | Retry pending exports, then build + export the next `PackagesPerRun` queued packages (array) |
+| `POST /api/outbox/{packageId}/export` | Re-export one package whose export failed (idempotent; 409 if its files are gone). Also swept automatically every 15 min by `ExportRetryJob` |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Mark a variant as manually posted (optional body: `{"postUrl":"..."}`) |
 | `POST /api/outbox/{packageId}/{platform}/skip` | Mark a variant as deliberately not posted |
 
