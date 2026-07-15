@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS conversions (
     platform      TEXT,
     utm_campaign  TEXT,
     utm_content   TEXT,
+    utm_source    TEXT NOT NULL DEFAULT '',
     event_type    TEXT,
     revenue_eur   REAL,
     timestamp     TEXT
@@ -122,6 +123,7 @@ CREATE TABLE IF NOT EXISTS outbox (
 
         // Defensive migrations for databases created before a column existed.
         await EnsureColumnAsync(conn, "outbox", "package_dir", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(conn, "conversions", "utm_source", "TEXT NOT NULL DEFAULT ''");
 
         _initialized = true;
     }
@@ -287,12 +289,13 @@ CREATE TABLE IF NOT EXISTS outbox (
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"INSERT INTO conversions (post_id, platform, utm_campaign, utm_content, event_type, revenue_eur, timestamp)
-                            VALUES ($p, $pl, $c, $co, $e, $r, $t)";
+        cmd.CommandText = @"INSERT INTO conversions (post_id, platform, utm_campaign, utm_content, utm_source, event_type, revenue_eur, timestamp)
+                            VALUES ($p, $pl, $c, $co, $so, $e, $r, $t)";
         cmd.Parameters.AddWithValue("$p", c.PostId ?? "");
         cmd.Parameters.AddWithValue("$pl", c.Platform ?? "");
         cmd.Parameters.AddWithValue("$c", c.UtmCampaign ?? "");
         cmd.Parameters.AddWithValue("$co", c.UtmContent ?? "");
+        cmd.Parameters.AddWithValue("$so", c.UtmSource ?? "");
         cmd.Parameters.AddWithValue("$e", c.EventType ?? "");
         cmd.Parameters.AddWithValue("$r", (object?)c.RevenueEur ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$t", c.Timestamp.ToString("O"));
@@ -304,7 +307,7 @@ CREATE TABLE IF NOT EXISTS outbox (
         var list = new List<Conversion>();
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT post_id, platform, utm_campaign, utm_content, event_type, revenue_eur, timestamp FROM conversions ORDER BY id DESC LIMIT $l";
+        cmd.CommandText = "SELECT post_id, platform, utm_campaign, utm_content, event_type, revenue_eur, timestamp, utm_source FROM conversions ORDER BY id DESC LIMIT $l";
         cmd.Parameters.AddWithValue("$l", limit);
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
@@ -318,6 +321,7 @@ CREATE TABLE IF NOT EXISTS outbox (
                 EventType = r.IsDBNull(4) ? "" : r.GetString(4),
                 RevenueEur = r.IsDBNull(5) ? null : (decimal?)r.GetDouble(5),
                 Timestamp = DateTimeOffset.TryParse(r.IsDBNull(6) ? null : r.GetString(6), out var dt) ? dt : DateTimeOffset.UtcNow,
+                UtmSource = r.IsDBNull(7) ? "" : r.GetString(7),
             });
         }
         return list;

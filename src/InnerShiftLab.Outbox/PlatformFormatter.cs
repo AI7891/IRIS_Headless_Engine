@@ -62,7 +62,7 @@ public static class PlatformFormatter
     {
         var format = PlatformFormats.Get(platform);
         var (body, links, hashtags) = Dissect(caption);
-        links = links.Select(l => StampUtmSource(l, format.Platform)).ToList();
+        links = links.Select(l => RewriteUtm(l, format.Platform)).ToList();
 
         var keptTags = hashtags.Take(format.MaxHashtags).ToList();
         var tail = new List<string>();
@@ -82,20 +82,27 @@ public static class PlatformFormatter
     }
 
     /// <summary>
-    /// Rewrites utm_source in a tracking link to the target platform (the engine
-    /// emits a platform-agnostic caption; the variant is what gets posted where).
-    /// Without this, a Skool join could be traced to a hook but never to the
-    /// platform it came from. Links without UTM parameters are left untouched.
+    /// Rewrites utm_source to the target platform and utm_medium to "manual" on a
+    /// tracking link (the engine emits a platform-agnostic caption; the variant is
+    /// what gets posted where — by hand). Every other query parameter is preserved:
+    /// utm_campaign / utm_content carry hook + pillar and are what
+    /// MonetizationLogger.ExtractUtms parses. Links without UTM parameters are
+    /// left untouched; missing utm_source / utm_medium are appended.
     /// </summary>
-    private static string StampUtmSource(string link, string platform)
+    private static string RewriteUtm(string link, string platform)
     {
         if (!link.Contains("utm_", StringComparison.OrdinalIgnoreCase)) return link;
-        var stamped = System.Text.RegularExpressions.Regex.Replace(
-            link, "(utm_source=)[^&]*", "${1}" + Uri.EscapeDataString(platform),
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        if (!stamped.Contains("utm_source=", StringComparison.OrdinalIgnoreCase))
-            stamped += (stamped.Contains('?') ? "&" : "?") + $"utm_source={Uri.EscapeDataString(platform)}";
-        return stamped;
+        var rewritten = ReplaceOrAppendParam(link, "utm_source", Uri.EscapeDataString(platform));
+        return ReplaceOrAppendParam(rewritten, "utm_medium", "manual");
+    }
+
+    private static string ReplaceOrAppendParam(string link, string param, string value)
+    {
+        if (link.Contains(param + "=", StringComparison.OrdinalIgnoreCase))
+            return System.Text.RegularExpressions.Regex.Replace(
+                link, $"({param}=)[^&]*", "${1}" + value,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return link + (link.Contains('?') ? "&" : "?") + $"{param}={value}";
     }
 
     /// <summary>Splits a caption into body lines, link lines, and an ordered de-duplicated hashtag list.</summary>

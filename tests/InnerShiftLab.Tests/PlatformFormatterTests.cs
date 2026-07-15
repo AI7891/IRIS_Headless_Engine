@@ -5,8 +5,9 @@ namespace InnerShiftLab.Tests;
 
 public class PlatformFormatterTests
 {
+    // Matches the neutral pre-format default emitted by IrisEngine.BuildCaption.
     private const string UtmLink =
-        "https://linktr.ee/dennis.p.santillan87?utm_source=auto&utm_medium=social&utm_campaign=hook-01&utm_content=Integrate&utm_term=iris";
+        "https://linktr.ee/dennis.p.santillan87?utm_source=iris&utm_medium=organic&utm_campaign=hook-01&utm_content=Integrate&utm_term=iris";
 
     private static string EngineCaption(string hookText) =>
 $@"🧠 {hookText}
@@ -71,12 +72,47 @@ $@"🧠 {hookText}
         foreach (var f in PlatformFormats.All)
         {
             var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
-            // The engine emits utm_source=auto; each variant must carry its own platform
-            // so a Skool join can be attributed to Instagram vs TikTok vs YouTube.
+            // The engine emits a neutral utm_source=iris; each variant must carry its
+            // own platform so a Skool join can be attributed per platform.
             var link = f.LinkInBio ? v.Link : v.Caption;
             Assert.Contains($"utm_source={f.Platform}", link);
-            Assert.DoesNotContain("utm_source=auto", link);
+            Assert.DoesNotContain("utm_source=iris", link);
         }
+    }
+
+    [Fact]
+    public void Format_RewritesUtmMediumToManual()
+    {
+        foreach (var f in PlatformFormats.All)
+        {
+            var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
+            var link = f.LinkInBio ? v.Link : v.Caption;
+            // Posting is manual now — utm_medium=organic is rewritten accordingly.
+            Assert.Contains("utm_medium=manual", link);
+            Assert.DoesNotContain("utm_medium=organic", link);
+        }
+    }
+
+    [Fact]
+    public void Format_CampaignAndContent_AreByteIdenticalToInput()
+    {
+        foreach (var f in PlatformFormats.All)
+        {
+            var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
+            var link = f.LinkInBio ? v.Link : v.Caption;
+            // utm_campaign / utm_content carry hook + pillar and must never be touched.
+            Assert.Contains("utm_campaign=hook-01", link);
+            Assert.Contains("utm_content=Integrate", link);
+        }
+    }
+
+    [Fact]
+    public void Format_CaptionWithNoLink_IsUnaffected()
+    {
+        var caption = "just a body line\n\n#Tag #Two";
+        var v = PlatformFormatter.Format("facebook", "body", caption);
+        Assert.DoesNotContain("utm_", v.Caption);
+        Assert.Equal("", v.Link);
     }
 
     [Fact]

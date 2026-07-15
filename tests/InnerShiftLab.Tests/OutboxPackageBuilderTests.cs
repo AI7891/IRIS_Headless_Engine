@@ -33,7 +33,7 @@ public class OutboxPackageBuilderTests : IDisposable
         HookText = "Your skin is keeping the score your mind refuses to.",
         Pillar = Pillar.Identify,
         Caption = "🧠 Your skin is keeping the score your mind refuses to.\n\n" +
-                  "https://linktr.ee/x?utm_source=auto&utm_campaign=hook-01&utm_content=Identify\n\n" +
+                  "https://linktr.ee/x?utm_source=iris&utm_medium=organic&utm_campaign=hook-01&utm_content=Identify\n\n" +
                   "#IdentifyYourSignal #TheInnerShiftLab #IRISMethod #VitiligoHealing #TraumaInformedHealing",
     };
 

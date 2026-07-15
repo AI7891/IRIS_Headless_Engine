@@ -128,8 +128,7 @@ public sealed class OutboxService : IOutboxService
         // The AI caption has no tracking link of its own — append one so creator
         // content stays attributable (PlatformFormatter stamps utm_source per variant).
         var hookId = $"creator-{content.ScriptId}";
-        var utm = $"utm_source=auto&utm_medium=social&utm_campaign={Uri.EscapeDataString(hookId)}" +
-                  $"&utm_content={nameof(Pillar.Integrate)}&utm_term=iris";
+        var link = UtmLinks.BuildTracked(_irisSettings.LinktreeUrl, hookId, nameof(Pillar.Integrate));
         var slot = new PostSlot
         {
             SlotId = content.ScriptId,
@@ -137,7 +136,7 @@ public sealed class OutboxService : IOutboxService
             HookText = content.Title,
             Pillar = Pillar.Integrate,
             Platforms = _settings.EffectivePlatforms,
-            Caption = $"{content.Caption}\n\n{_irisSettings.LinktreeUrl}?{utm}",
+            Caption = $"{content.Caption}\n\n{link}",
             ScheduledAt = DateTimeOffset.UtcNow,
         };
 

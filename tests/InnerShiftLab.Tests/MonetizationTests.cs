@@ -123,6 +123,25 @@ public class MonetizationTests
     }
 
     [Fact]
+    public async Task Summary_AggregatesBySource_AndPersistsUtmSource()
+    {
+        var (logger, repo) = NewLogger();
+        await logger.LogSkoolJoinAsync(JsonConvert.SerializeObject(
+            new { plan = "inner_circle", @ref = "utm_source=instagram&utm_campaign=hookA" }));
+        await logger.LogSkoolJoinAsync(JsonConvert.SerializeObject(
+            new { plan = "root_work_lab", @ref = "utm_source=tiktok&utm_campaign=hookA" }));
+
+        // utm_source is stored on the conversion, not just used for platform fallback.
+        Assert.Contains(repo.Conversions, c => c.UtmSource == "instagram");
+        Assert.Contains(repo.Conversions, c => c.UtmSource == "tiktok");
+
+        var summary = await logger.GetSummaryAsync();
+        Assert.Equal("tiktok", summary.BySource.First().Source);
+        Assert.Equal(197m, summary.BySource.First().RevenueEur);
+        Assert.Equal(37m, summary.BySource.Single(s => s.Source == "instagram").RevenueEur);
+    }
+
+    [Fact]
     public async Task Summary_AggregatesRevenueAndCountsByCampaign()
     {
         var (logger, repo) = NewLogger();

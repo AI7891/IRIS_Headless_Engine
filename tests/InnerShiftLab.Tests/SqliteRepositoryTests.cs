@@ -73,6 +73,18 @@ public class SqliteRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SaveConversion_PersistsUtmSource()
+    {
+        await _repo.SaveConversionAsync(new Conversion
+        {
+            PostId = "p1", EventType = "skool_join", UtmCampaign = "c1", UtmSource = "tiktok",
+        });
+
+        var got = Assert.Single(await _repo.GetConversionsAsync(10));
+        Assert.Equal("tiktok", got.UtmSource);
+    }
+
+    [Fact]
     public async Task SaveTokens_ThenLoad_RoundTrips()
     {
         await _repo.SaveTokensAsync("meta", "{\"a\":1}");

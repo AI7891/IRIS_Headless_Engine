@@ -110,6 +110,7 @@ public sealed class Conversion
     public string Platform { get; set; } = "";
     public string UtmCampaign { get; set; } = "";
     public string UtmContent { get; set; } = "";
+    public string UtmSource { get; set; } = "";   // platform the link was posted on (from utm_source)
     public string EventType { get; set; } = "";   // click, skool_join, inner_circle_join, root_work_lab_join
     public decimal? RevenueEur { get; set; }
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;

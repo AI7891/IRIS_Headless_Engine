@@ -40,7 +40,7 @@ public sealed class MonetizationLogger : IMonetizationLogger
         var c = new Conversion
         {
             PostId = postId, Platform = platform, UtmCampaign = utmCampaign, UtmContent = utmContent,
-            EventType = "click", Timestamp = DateTimeOffset.UtcNow,
+            UtmSource = platform, EventType = "click", Timestamp = DateTimeOffset.UtcNow,
         };
         await _repo.SaveConversionAsync(c);
     }
@@ -74,6 +74,7 @@ public sealed class MonetizationLogger : IMonetizationLogger
             Platform = platform,
             UtmCampaign = camp,
             UtmContent = content,
+            UtmSource = source,
             EventType = "skool_join",
             RevenueEur = revenue,
             Timestamp = DateTimeOffset.UtcNow,
@@ -110,6 +111,21 @@ public sealed class MonetizationLogger : IMonetizationLogger
             })
             .OrderByDescending(s => s.RevenueEur)
             .ToList();
+        // "Which platform converts?" — grouped on the raw utm_source the outbox
+        // stamped per variant (unlike ByPlatform, which resolves an explicit
+        // payload platform first). This is the per-source revenue answer.
+        var bySource = all
+            .Where(c => !string.IsNullOrEmpty(c.UtmSource))
+            .GroupBy(c => c.UtmSource, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new SourceStat
+            {
+                Source = g.Key.ToLowerInvariant(),
+                Joins = g.Count(c => c.EventType == "skool_join"),
+                Clicks = g.Count(c => c.EventType == "click"),
+                RevenueEur = g.Where(c => c.RevenueEur.HasValue).Sum(c => c.RevenueEur!.Value),
+            })
+            .OrderByDescending(s => s.RevenueEur)
+            .ToList();
         return new MonetizationSummary
         {
             TotalJoins = all.Count(c => c.EventType == "skool_join"),
@@ -117,6 +133,7 @@ public sealed class MonetizationLogger : IMonetizationLogger
             TotalRevenueEur = all.Where(c => c.RevenueEur.HasValue).Sum(c => c.RevenueEur!.Value),
             ByCampaign = byCampaign,
             ByPlatform = byPlatform,
+            BySource = bySource,
         };
     }
 
@@ -153,11 +170,20 @@ public sealed class MonetizationSummary
     public decimal TotalRevenueEur { get; set; }
     public List<CampaignStat> ByCampaign { get; set; } = new();
     public List<PlatformStat> ByPlatform { get; set; } = new();
+    public List<SourceStat> BySource { get; set; } = new();
 }
 
 public sealed class PlatformStat
 {
     public string Platform { get; set; } = "";
+    public int Joins { get; set; }
+    public int Clicks { get; set; }
+    public decimal RevenueEur { get; set; }
+}
+
+public sealed class SourceStat
+{
+    public string Source { get; set; } = "";
     public int Joins { get; set; }
     public int Clicks { get; set; }
     public decimal RevenueEur { get; set; }
