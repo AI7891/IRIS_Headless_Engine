@@ -196,4 +196,72 @@ public class SqliteRepositoryTests : IAsyncLifetime
         Assert.Equal("https://instagram.com/p/1", ig.PostUrl);
         Assert.NotNull(ig.PostedAt);
     }
+
+    [Fact]
+    public async Task SaveOutboxItem_Upsert_NeverRegressesTerminalStatus()
+    {
+        var item = NewOutboxItem("pkg1", "instagram");
+        await _repo.SaveOutboxItemAsync(item);
+        await _repo.MarkOutboxPostedAsync("pkg1", "instagram", "https://instagram.com/p/1");
+
+        // Rebuilding the same package must not flip a Posted item back to Pending
+        // or erase its confirmation details.
+        var rebuilt = NewOutboxItem("pkg1", "instagram");
+        rebuilt.Caption = "rebuilt caption";
+        await _repo.SaveOutboxItemAsync(rebuilt);
+
+        var ig = Assert.Single(await _repo.GetOutboxPackageAsync("pkg1"));
+        Assert.Equal(OutboxStatus.Posted, ig.Status);
+        Assert.Equal("https://instagram.com/p/1", ig.PostUrl);
+        Assert.NotNull(ig.PostedAt);
+        Assert.Equal("rebuilt caption", ig.Caption); // non-lifecycle fields still update
+    }
+
+    [Fact]
+    public async Task MarkOutboxSkipped_Works_ButNeverOverridesPosted()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "tiktok"));
+        await _repo.MarkOutboxPostedAsync("pkg1", "instagram", null);
+
+        Assert.True(await _repo.MarkOutboxSkippedAsync("pkg1", "tiktok"));
+        Assert.False(await _repo.MarkOutboxSkippedAsync("pkg1", "instagram"));
+        Assert.False(await _repo.MarkOutboxSkippedAsync("pkg1", "youtube"));
+
+        var pkg = await _repo.GetOutboxPackageAsync("pkg1");
+        Assert.Equal(OutboxStatus.Skipped, Assert.Single(pkg, i => i.Platform == "tiktok").Status);
+        Assert.Equal(OutboxStatus.Posted, Assert.Single(pkg, i => i.Platform == "instagram").Status);
+    }
+
+    [Fact]
+    public async Task MarkOutboxPosted_RejectsSkippedVariant()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+        await _repo.MarkOutboxSkippedAsync("pkg1", "instagram");
+
+        Assert.False(await _repo.MarkOutboxPostedAsync("pkg1", "instagram", "https://x"));
+        Assert.Equal(OutboxStatus.Skipped, Assert.Single(await _repo.GetOutboxPackageAsync("pkg1")).Status);
+    }
+
+    [Fact]
+    public async Task GetPost_RoundTripsSavedSlot_AndReturnsNullForUnknown()
+    {
+        var slot = new PostSlot
+        {
+            HookId = "hookA",
+            Pillar = Pillar.Identify,
+            Platforms = new[] { "instagram" },
+            Caption = "cap",
+            Status = PostStatus.Queued,
+            ScheduledAt = DateTimeOffset.UtcNow,
+        };
+        await _repo.SavePostAsync(slot);
+
+        var got = await _repo.GetPostAsync(slot.SlotId);
+        Assert.NotNull(got);
+        Assert.Equal("hookA", got!.HookId);
+        Assert.Equal(PostStatus.Queued, got.Status);
+
+        Assert.Null(await _repo.GetPostAsync("unknown"));
+    }
 }

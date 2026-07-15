@@ -344,7 +344,15 @@ try
     {
         var ok = await o.ConfirmPostedAsync(packageId, platform, req?.PostUrl);
         return ok ? Results.Ok(new { confirmed = true, packageId, platform })
-                  : Results.NotFound(new { message = $"No outbox item for package '{packageId}' on '{platform}'" });
+                  : Results.NotFound(new { message = $"No confirmable outbox item for package '{packageId}' on '{platform}' (unknown, or skipped)" });
+    });
+
+    app.MapPost("/api/outbox/{packageId}/{platform}/skip", async (
+        string packageId, string platform, IOutboxService o) =>
+    {
+        var ok = await o.SkipAsync(packageId, platform);
+        return ok ? Results.Ok(new { skipped = true, packageId, platform })
+                  : Results.NotFound(new { message = $"No skippable outbox item for package '{packageId}' on '{platform}' (unknown, or already posted)" });
     });
 
     if (autoPublish)

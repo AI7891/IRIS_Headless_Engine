@@ -190,6 +190,71 @@ public class OutboxServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Confirm_PreservesBuildTimePostFields()
+    {
+        var service = Service();
+        var packages = await service.BuildDailyPackagesAsync();
+        var id = packages[0].PackageId;
+        var original = Assert.Single(_repo.Posts, p => p.SlotId == id);
+        var hookText = original.HookText;
+        var scheduledAt = original.ScheduledAt;
+
+        await service.ConfirmPostedAsync(id, "instagram", "https://instagram.com/p/1");
+
+        // The row saved at build time is updated in place, not reconstructed.
+        var post = Assert.Single(_repo.Posts, p => p.SlotId == id);
+        Assert.Equal(hookText, post.HookText);
+        Assert.Equal(scheduledAt, post.ScheduledAt);
+        Assert.Equal(PostStatus.Publishing, post.Status);
+    }
+
+    [Fact]
+    public async Task Skip_ThenConfirmRest_PublishesWithOnlyPostedUrls()
+    {
+        var service = Service();
+        var packages = await service.BuildDailyPackagesAsync();
+        var id = packages[0].PackageId;
+
+        Assert.True(await service.SkipAsync(id, "tiktok"));
+        Assert.True(await service.ConfirmPostedAsync(id, "instagram", "https://instagram.com/p/1"));
+
+        var post = Assert.Single(_repo.Posts, p => p.SlotId == id);
+        Assert.Equal(PostStatus.Published, post.Status);
+        Assert.Equal(new[] { "https://instagram.com/p/1" }, post.PerPlatformUrls);
+        Assert.Equal(OutboxStatus.Skipped,
+            Assert.Single(await _repo.GetOutboxPackageAsync(id), i => i.Platform == "tiktok").Status);
+    }
+
+    [Fact]
+    public async Task Skip_All_MarksPostRowFailed()
+    {
+        var service = Service();
+        var packages = await service.BuildDailyPackagesAsync();
+        var id = packages[0].PackageId;
+
+        Assert.True(await service.SkipAsync(id, "instagram"));
+        Assert.True(await service.SkipAsync(id, "tiktok"));
+
+        var post = Assert.Single(_repo.Posts, p => p.SlotId == id);
+        Assert.Equal(PostStatus.Failed, post.Status);
+        Assert.Contains("skipped", post.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SkippedVariant_CannotBeConfirmed_AndViceVersa()
+    {
+        var service = Service();
+        var packages = await service.BuildDailyPackagesAsync();
+        var id = packages[0].PackageId;
+
+        Assert.True(await service.SkipAsync(id, "tiktok"));
+        Assert.False(await service.ConfirmPostedAsync(id, "tiktok", "https://tiktok.com/v/1"));
+
+        Assert.True(await service.ConfirmPostedAsync(id, "instagram", null));
+        Assert.False(await service.SkipAsync(id, "instagram"));
+    }
+
+    [Fact]
     public async Task Confirm_PartialThenFull_FlipsPostRowPublishingThenPublished()
     {
         var service = Service();

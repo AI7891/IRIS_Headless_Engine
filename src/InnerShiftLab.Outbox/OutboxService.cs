@@ -32,8 +32,11 @@ public interface IOutboxService
     /// </summary>
     Task<string?> RetryExportAsync(string packageId, CancellationToken ct = default);
 
-    /// <summary>Operator confirmation that one platform variant was posted manually. False when the variant doesn't exist.</summary>
+    /// <summary>Operator confirmation that one platform variant was posted manually. False when the variant doesn't exist or was skipped.</summary>
     Task<bool> ConfirmPostedAsync(string packageId, string platform, string? postUrl, CancellationToken ct = default);
+
+    /// <summary>Operator decision not to post one platform variant. False when the variant doesn't exist or was already posted.</summary>
+    Task<bool> SkipAsync(string packageId, string platform, CancellationToken ct = default);
 }
 
 public sealed class OutboxService : IOutboxService
@@ -137,28 +140,63 @@ public sealed class OutboxService : IOutboxService
     {
         if (!await _repo.MarkOutboxPostedAsync(packageId, platform, postUrl))
             return false;
+        await SyncPostRowAsync(packageId, platform, "posted");
+        return true;
+    }
 
+    public async Task<bool> SkipAsync(string packageId, string platform, CancellationToken ct = default)
+    {
+        if (!await _repo.MarkOutboxSkippedAsync(packageId, platform))
+            return false;
+        await SyncPostRowAsync(packageId, platform, "skipped");
+        return true;
+    }
+
+    /// <summary>
+    /// Mirrors outbox progress into the posts table so existing reporting keeps
+    /// working. Updates the row saved at build time in place — never reconstructs
+    /// it — so HookText/ScheduledAt/MediaUrl survive every confirm.
+    /// </summary>
+    private async Task SyncPostRowAsync(string packageId, string platform, string action)
+    {
         var items = await _repo.GetOutboxPackageAsync(packageId);
+        if (items.Count == 0)
+        {
+            // The status update succeeded but the package rows are gone (concurrent
+            // cleanup?) — nothing to mirror, and the confirmation itself stands.
+            _log.LogWarning("Outbox {Action}: {PackageId}/{Platform} confirmed but package rows are missing",
+                action, packageId, platform);
+            return;
+        }
+
         var posted = items.Where(i => i.Status == OutboxStatus.Posted).ToList();
         var allDone = items.All(i => i.Status is OutboxStatus.Posted or OutboxStatus.Skipped);
 
-        // Mirror progress into the posts table so existing reporting keeps working.
-        var first = items[0];
-        await _repo.SavePostAsync(new PostSlot
+        var post = await _repo.GetPostAsync(packageId);
+        if (post == null)
         {
-            SlotId = packageId,
-            HookId = first.HookId,
-            Pillar = first.Pillar,
-            Platforms = items.Select(i => i.Platform).ToArray(),
-            Caption = first.Caption,
-            ScheduledAt = first.CreatedAt,
-            Status = allDone ? PostStatus.Published : PostStatus.Publishing,
-            PerPlatformUrls = posted.Where(i => !string.IsNullOrEmpty(i.PostUrl)).Select(i => i.PostUrl!).ToArray(),
-        });
+            var first = items[0];
+            post = new PostSlot
+            {
+                SlotId = packageId,
+                HookId = first.HookId,
+                Pillar = first.Pillar,
+                Platforms = items.Select(i => i.Platform).ToArray(),
+                Caption = first.Caption,
+                ScheduledAt = first.CreatedAt,
+            };
+        }
 
-        _log.LogInformation("Outbox confirm: {PackageId}/{Platform} posted ({Posted}/{Total} platforms done)",
-            packageId, platform, posted.Count, items.Count);
-        return true;
+        post.Status = allDone
+            ? (posted.Count > 0 ? PostStatus.Published : PostStatus.Failed)
+            : (posted.Count > 0 ? PostStatus.Publishing : PostStatus.Queued);
+        if (allDone && posted.Count == 0)
+            post.Error = "All platform variants were skipped by the operator";
+        post.PerPlatformUrls = posted.Where(i => !string.IsNullOrEmpty(i.PostUrl)).Select(i => i.PostUrl!).ToArray();
+        await _repo.SavePostAsync(post);
+
+        _log.LogInformation("Outbox {Action}: {PackageId}/{Platform} ({Posted}/{Total} platforms posted)",
+            action, packageId, platform, posted.Count, items.Count);
     }
 
     /// <summary>Re-exports every package that still has Pending items (i.e. a previous export failed).</summary>

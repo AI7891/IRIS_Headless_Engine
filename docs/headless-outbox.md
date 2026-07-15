@@ -124,10 +124,14 @@ or force it immediately with `POST /api/outbox/{packageId}/export`.
 | `POST /api/outbox/build` | Retry pending exports, then build + export today's packages (array) up to the daily cap |
 | `POST /api/outbox/{packageId}/export` | Re-export one package whose export failed (idempotent; 409 if its files are gone) |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Mark a variant as manually posted (optional body: `{"postUrl":"..."}`) |
+| `POST /api/outbox/{packageId}/{platform}/skip` | Mark a variant as deliberately not posted |
 
-Confirm progress is mirrored into the `posts` table: the package row moves
-`Queued → Publishing` (first confirm) `→ Published` (all platforms confirmed), so
-existing reporting keeps working.
+Confirm/skip progress is mirrored into the `posts` table: the package row moves
+`Queued → Publishing` (first confirm) `→ Published` (all platforms confirmed or
+skipped, with at least one posted; all-skipped marks it `Failed`), so existing
+reporting keeps working. Lifecycle transitions are guarded: a `Posted` variant
+can't be skipped, a `Skipped` one can't be confirmed, and rebuilding a package
+never regresses a terminal status.
 
 ## Quarantined: the auto-publish pipeline
 

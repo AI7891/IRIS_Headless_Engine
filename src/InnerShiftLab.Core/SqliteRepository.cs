@@ -19,6 +19,7 @@ public interface IRepository
 
     // Posts
     Task SavePostAsync(PostSlot slot);
+    Task<PostSlot?> GetPostAsync(string slotId);
     Task<IReadOnlyList<PostSlot>> GetPendingPostsAsync();
     Task<IReadOnlyList<PostSlot>> GetPublishedTodayAsync();
 
@@ -36,6 +37,7 @@ public interface IRepository
     Task<IReadOnlyDictionary<string, int>> CountOutboxItemsForDayAsync(DateTimeOffset dayUtc);
     Task<int> MarkOutboxExportedAsync(string packageId, string exportRef);
     Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl);
+    Task<bool> MarkOutboxSkippedAsync(string packageId, string platform);
 }
 
 public sealed class SqliteRepository : IRepository, IAsyncDisposable
@@ -174,6 +176,30 @@ CREATE TABLE IF NOT EXISTS outbox (
         await cmd.ExecuteNonQueryAsync();
     }
 
+    public async Task<PostSlot?> GetPostAsync(string slotId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT slot_id, hook_id, pillar, platforms, caption, media_url, scheduled, status, post_ids, post_urls, error FROM posts WHERE slot_id=$s";
+        cmd.Parameters.AddWithValue("$s", slotId);
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) return null;
+        return new PostSlot
+        {
+            SlotId = r.GetString(0),
+            HookId = r.IsDBNull(1) ? "" : r.GetString(1),
+            Pillar = Enum.TryParse<Pillar>(r.IsDBNull(2) ? "" : r.GetString(2), out var p) ? p : Pillar.Integrate,
+            Platforms = (r.IsDBNull(3) ? "" : r.GetString(3)).Split(',', StringSplitOptions.RemoveEmptyEntries),
+            Caption = r.IsDBNull(4) ? "" : r.GetString(4),
+            MediaUrl = r.IsDBNull(5) ? null : r.GetString(5),
+            ScheduledAt = DateTimeOffset.TryParse(r.IsDBNull(6) ? null : r.GetString(6), out var dt) ? dt : DateTimeOffset.UtcNow,
+            Status = Enum.TryParse<PostStatus>(r.IsDBNull(7) ? "" : r.GetString(7), out var st) ? st : PostStatus.Queued,
+            PerPlatformPostIds = (r.IsDBNull(8) ? "" : r.GetString(8)).Split(',', StringSplitOptions.RemoveEmptyEntries),
+            PerPlatformUrls = (r.IsDBNull(9) ? "" : r.GetString(9)).Split(',', StringSplitOptions.RemoveEmptyEntries),
+            Error = r.IsDBNull(10) ? null : r.GetString(10),
+        };
+    }
+
     public async Task<IReadOnlyList<PostSlot>> GetPendingPostsAsync()
     {
         var list = new List<PostSlot>();
@@ -285,11 +311,16 @@ CREATE TABLE IF NOT EXISTS outbox (
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
+        // Terminal states never regress: rebuilding a package must not flip a
+        // Posted/Skipped variant back to Pending or erase its confirmation.
         cmd.CommandText = @"INSERT INTO outbox (package_id, platform, hook_id, pillar, caption, title, media_path, width, height, status, export_ref, created, posted_at, post_url)
                             VALUES ($pk, $pl, $h, $pi, $c, $ti, $m, $w, $he, $st, $ex, $cr, $po, $pu)
                             ON CONFLICT(package_id, platform) DO UPDATE SET
                                 caption=$c, title=$ti, media_path=$m, width=$w, height=$he,
-                                status=$st, export_ref=$ex, posted_at=$po, post_url=$pu";
+                                status = CASE WHEN outbox.status IN ('Posted','Skipped') THEN outbox.status ELSE $st END,
+                                export_ref=$ex,
+                                posted_at = COALESCE(outbox.posted_at, $po),
+                                post_url = COALESCE(outbox.post_url, $pu)";
         cmd.Parameters.AddWithValue("$pk", item.PackageId);
         cmd.Parameters.AddWithValue("$pl", item.Platform);
         cmd.Parameters.AddWithValue("$h", item.HookId ?? "");
@@ -369,13 +400,29 @@ CREATE TABLE IF NOT EXISTS outbox (
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
+        // A Skipped variant stays skipped — confirming it is operator error.
         cmd.CommandText = @"UPDATE outbox SET status=$st, posted_at=$po, post_url=$pu
-                            WHERE package_id=$pk AND platform=$pl";
+                            WHERE package_id=$pk AND platform=$pl AND status != $skipped";
         cmd.Parameters.AddWithValue("$st", OutboxStatus.Posted.ToString());
         cmd.Parameters.AddWithValue("$po", DateTimeOffset.UtcNow.ToString("O"));
         cmd.Parameters.AddWithValue("$pu", (object?)postUrl ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$pk", packageId);
         cmd.Parameters.AddWithValue("$pl", platform);
+        cmd.Parameters.AddWithValue("$skipped", OutboxStatus.Skipped.ToString());
+        return await cmd.ExecuteNonQueryAsync() > 0;
+    }
+
+    public async Task<bool> MarkOutboxSkippedAsync(string packageId, string platform)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        // A Posted variant stays posted — the post exists in the real world.
+        cmd.CommandText = @"UPDATE outbox SET status=$st
+                            WHERE package_id=$pk AND platform=$pl AND status != $posted";
+        cmd.Parameters.AddWithValue("$st", OutboxStatus.Skipped.ToString());
+        cmd.Parameters.AddWithValue("$pk", packageId);
+        cmd.Parameters.AddWithValue("$pl", platform);
+        cmd.Parameters.AddWithValue("$posted", OutboxStatus.Posted.ToString());
         return await cmd.ExecuteNonQueryAsync() > 0;
     }
 
