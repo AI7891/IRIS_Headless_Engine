@@ -23,9 +23,14 @@ and the old pipeline comes back exactly as it was.
 Every day at **09:00 UTC** the `DailyOutboxJob` runs (or trigger it any time with
 `POST /api/outbox/build`):
 
+0. **Retry stuck exports** — any package whose earlier export failed (items still
+   `Pending`) is re-exported before anything new is built. A Drive hiccup never
+   loses a day of content.
 1. **Curate** — `IIrisEngine` (untouched) picks from the queue; if empty it
-   auto-curates the top-scored hooks, packages the best one, and leaves the rest
-   queued for the following days.
+   auto-curates the top-scored hooks. Queued slots are packaged best-first until
+   `Iris:MaxPostsPerDayPerPlatform` (default 2) is reached for every platform.
+   The cap is seeded from the SQLite outbox table, so container restarts don't
+   reset it; slots over the cap stay queued.
 2. **Render one variant per platform**, each with correct dimensions, caption
    limit, and hashtag count:
 
@@ -37,7 +42,10 @@ Every day at **09:00 UTC** the `DailyOutboxJob` runs (or trigger it any time wit
    | YouTube   | video (image fallback) | 1080×1920 | 5,000       | 3        | ≤100 chars |
 
    Overlong captions are trimmed at word boundaries — **the UTM link and hashtags
-   always survive intact**, which is what keeps Skool attribution working.
+   always survive intact**, which is what keeps Skool attribution working. Each
+   variant's link is stamped with `utm_source=<platform>`, so a Skool join traces
+   back to *both* the hook (`utm_campaign`) and the platform it was posted on —
+   `/api/monetization/summary` reports a `byPlatform` breakdown.
 3. **Persist to the `outbox` table** in SQLite (source of truth). Item lifecycle:
    `Pending → Exported → Posted` (or `Skipped`).
 4. **Export the package** — media + `caption.txt` (+ `title.txt` for YouTube) +
@@ -97,7 +105,8 @@ long-lived tokens are stored anywhere:
 
 Each daily package appears as `<date> <hookId>/` inside the shared folder. If an
 export fails, the items stay `Pending`, the package remains available locally, and
-the error is logged — nothing is lost.
+the error is logged — nothing is lost: the next daily run retries it automatically,
+or force it immediately with `POST /api/outbox/{packageId}/export`.
 
 ## Endpoint reference
 
@@ -105,7 +114,8 @@ the error is logged — nothing is lost.
 |---|---|
 | `GET /api/outbox?status=exported&limit=50` | List outbox items (status filter optional: pending/exported/posted/skipped) |
 | `GET /api/outbox/{packageId}` | All platform variants of one package |
-| `POST /api/outbox/build` | Build + export today's package on demand |
+| `POST /api/outbox/build` | Retry pending exports, then build + export today's packages (array) up to the daily cap |
+| `POST /api/outbox/{packageId}/export` | Re-export one package whose export failed (idempotent; 409 if its files are gone) |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Mark a variant as manually posted (optional body: `{"postUrl":"..."}`) |
 
 Confirm progress is mirrored into the `posts` table: the package row moves

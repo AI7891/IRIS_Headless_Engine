@@ -33,6 +33,7 @@ public interface IRepository
     Task SaveOutboxItemAsync(OutboxItem item);
     Task<IReadOnlyList<OutboxItem>> GetOutboxItemsAsync(OutboxStatus? status = null, int limit = 100);
     Task<IReadOnlyList<OutboxItem>> GetOutboxPackageAsync(string packageId);
+    Task<IReadOnlyDictionary<string, int>> CountOutboxItemsForDayAsync(DateTimeOffset dayUtc);
     Task<int> MarkOutboxExportedAsync(string packageId, string exportRef);
     Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl);
 }
@@ -330,6 +331,24 @@ CREATE TABLE IF NOT EXISTS outbox (
         cmd.CommandText = $"SELECT {OutboxColumns} FROM outbox WHERE package_id=$pk ORDER BY platform";
         cmd.Parameters.AddWithValue("$pk", packageId);
         return await ReadOutboxItemsAsync(cmd);
+    }
+
+    public async Task<IReadOnlyDictionary<string, int>> CountOutboxItemsForDayAsync(DateTimeOffset dayUtc)
+    {
+        // Seeds the daily per-platform cap. Persisted (not in-memory) on purpose:
+        // Codespaces containers restart constantly and the cap must survive that.
+        var start = new DateTimeOffset(dayUtc.UtcDateTime.Date, TimeSpan.Zero);
+        var end = start.AddDays(1);
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT platform, COUNT(*) FROM outbox WHERE created >= $s AND created < $e GROUP BY platform";
+        cmd.Parameters.AddWithValue("$s", start.ToString("O"));
+        cmd.Parameters.AddWithValue("$e", end.ToString("O"));
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            counts[r.GetString(0)] = r.GetInt32(1);
+        return counts;
     }
 
     public async Task<int> MarkOutboxExportedAsync(string packageId, string exportRef)

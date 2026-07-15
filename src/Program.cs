@@ -317,10 +317,26 @@ try
 
     app.MapPost("/api/outbox/build", async (IOutboxService o, CancellationToken ct) =>
     {
-        var package = await o.BuildDailyPackageAsync(ct);
-        return package == null
-            ? Results.NotFound(new { message = "No hooks available to package" })
-            : Results.Ok(package);
+        var packages = await o.BuildDailyPackagesAsync(ct);
+        return packages.Count == 0
+            ? Results.NotFound(new { message = "Nothing to package: no hooks available or daily per-platform caps reached" })
+            : Results.Ok(packages);
+    });
+
+    app.MapPost("/api/outbox/{packageId}/export", async (string packageId, IOutboxService o, CancellationToken ct) =>
+    {
+        try
+        {
+            var exportRef = await o.RetryExportAsync(packageId, ct);
+            return exportRef == null
+                ? Results.NotFound(new { message = $"No outbox package '{packageId}'" })
+                : Results.Ok(new { packageId, exportRef });
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Package files gone from disk, or Drive misconfigured — tell the operator why.
+            return Results.Conflict(new { message = ex.Message });
+        }
     });
 
     app.MapPost("/api/outbox/{packageId}/{platform}/confirm", async (

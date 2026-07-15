@@ -123,6 +123,35 @@ public class OutboxPackageBuilderTests : IDisposable
     }
 
     [Fact]
+    public async Task Build_RestrictsToRequestedPlatforms()
+    {
+        var package = await Builder().BuildAsync(Slot(), new[] { "instagram", "youtube" });
+
+        Assert.Equal(2, package.Items.Count);
+        Assert.Contains(package.Items, i => i.Platform == "instagram");
+        Assert.Contains(package.Items, i => i.Platform == "youtube");
+        Assert.False(Directory.Exists(Path.Combine(package.PackageDir, "tiktok")));
+    }
+
+    [Fact]
+    public void EffectivePlatforms_EmptyList_FallsBackToAllSupported()
+    {
+        Assert.Equal(OutboxSettings.DefaultPlatforms, new OutboxSettings().EffectivePlatforms);
+    }
+
+    [Fact]
+    public void EffectivePlatforms_DeduplicatesBinderAppendedValues()
+    {
+        // The configuration binder appends bound array elements to existing ones;
+        // EffectivePlatforms must neutralize any resulting duplication.
+        var settings = new OutboxSettings
+        {
+            Platforms = new[] { "instagram", "tiktok", "Instagram", "tiktok" },
+        };
+        Assert.Equal(new[] { "instagram", "tiktok" }, settings.EffectivePlatforms);
+    }
+
+    [Fact]
     public async Task LocalExporter_ReturnsPackageDir()
     {
         var package = await Builder().BuildAsync(Slot());

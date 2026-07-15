@@ -5,8 +5,21 @@ namespace InnerShiftLab.Outbox;
 
 public sealed class OutboxSettings
 {
-    /// <summary>Platforms that get a formatted variant in every daily package.</summary>
-    public string[] Platforms { get; set; } = { "instagram", "facebook", "tiktok", "youtube" };
+    public static readonly string[] DefaultPlatforms = { "instagram", "facebook", "tiktok", "youtube" };
+
+    /// <summary>
+    /// Platforms that get a formatted variant in every daily package. Empty means
+    /// all supported platforms. Deliberately NOT defaulted to a filled array: the
+    /// configuration binder appends bound array elements to a non-empty default
+    /// instead of replacing it, which would silently duplicate every platform.
+    /// Consume via <see cref="EffectivePlatforms"/>.
+    /// </summary>
+    public string[] Platforms { get; set; } = Array.Empty<string>();
+
+    /// <summary>The de-duplicated platform list to build for, falling back to all supported platforms.</summary>
+    public string[] EffectivePlatforms => Platforms.Length == 0
+        ? DefaultPlatforms
+        : Platforms.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
     /// <summary>
     /// Render an mp4 for video-first platforms (TikTok/YouTube) when ffmpeg is

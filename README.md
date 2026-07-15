@@ -189,7 +189,8 @@ All available as HTTP endpoints. Add them as Android home screen shortcuts for f
 | `POST /api/iris/enqueue` body: `{"hookId":"...","pillar":"...","platforms":[...]}` | Add to queue |
 | `GET /api/outbox` | Outbox items (`?status=exported` to see what's waiting) |
 | `GET /api/outbox/{packageId}` | One package's platform variants |
-| `POST /api/outbox/build` | Build + export today's package now |
+| `POST /api/outbox/build` | Build + export today's packages now (honors `MaxPostsPerDayPerPlatform`) |
+| `POST /api/outbox/{packageId}/export` | Retry a failed Drive export |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Confirm a manual post (body optional: `{"postUrl":"..."}`) |
 | `GET /api/monetization/summary` | Revenue + join stats |
 | `GET /api/monetization/conversions` | Recent conversion events |

@@ -57,9 +57,9 @@ public sealed class DailyOutboxJob : IJob
     {
         try
         {
-            var package = await _outbox.BuildDailyPackageAsync(context.CancellationToken);
-            if (package == null)
-                _log.LogWarning("DailyOutbox: no package built (no hooks available)");
+            var packages = await _outbox.BuildDailyPackagesAsync(context.CancellationToken);
+            if (packages.Count == 0)
+                _log.LogWarning("DailyOutbox: no packages built (no hooks available or daily caps reached)");
         }
         catch (Exception ex)
         {

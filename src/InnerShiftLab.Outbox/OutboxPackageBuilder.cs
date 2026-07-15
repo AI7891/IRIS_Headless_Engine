@@ -23,7 +23,12 @@ public sealed record OutboxPackage(
 
 public interface IOutboxPackageBuilder
 {
-    Task<OutboxPackage> BuildAsync(PostSlot slot, CancellationToken ct = default);
+    /// <summary>
+    /// Builds the package for one slot. <paramref name="platforms"/> restricts the
+    /// variants (used to honor the daily per-platform cap); null means all
+    /// configured platforms.
+    /// </summary>
+    Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null, CancellationToken ct = default);
 }
 
 public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
@@ -40,16 +45,18 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
         _renderer = renderer; _repo = repo; _settings = settings; _outputRoot = outputRoot; _log = log;
     }
 
-    public async Task<OutboxPackage> BuildAsync(PostSlot slot, CancellationToken ct = default)
+    public async Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null, CancellationToken ct = default)
     {
         var createdAt = DateTimeOffset.UtcNow;
         var packageDir = Path.Combine(_outputRoot, "outbox", createdAt.ToString("yyyy-MM-dd"), slot.SlotId);
         Directory.CreateDirectory(packageDir);
 
+        var targets = _settings.EffectivePlatforms
+            .Where(p => platforms == null || platforms.Contains(p, StringComparer.OrdinalIgnoreCase));
         var visualText = string.IsNullOrWhiteSpace(slot.HookText) ? slot.Caption : slot.HookText;
         var items = new List<OutboxItem>();
 
-        foreach (var platform in _settings.Platforms)
+        foreach (var platform in targets)
         {
             ct.ThrowIfCancellationRequested();
             var variant = PlatformFormatter.Format(platform, visualText, slot.Caption);

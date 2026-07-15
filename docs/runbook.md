@@ -5,9 +5,10 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 ## Morning (10 minutes)
 
 1. **Tap Healthcheck shortcut** → `GET /healthz` should return `{"status":"ok"}`
-2. **Open the Google Drive `IRIS Outbox` folder** → today's package appeared at
-   09:00 UTC as `<date> <hookId>/`
-   - Not there? `GET /api/outbox` to check status, or `POST /api/outbox/build` to build it now
+2. **Open the Google Drive `IRIS Outbox` folder** → today's packages appeared at
+   09:00 UTC as `<date> <hookId>/` (up to `MaxPostsPerDayPerPlatform` per platform)
+   - Not there? `GET /api/outbox` to check status, or `POST /api/outbox/build` to build now
+   - Export failed earlier? `POST /api/outbox/{packageId}/export` retries it
 3. **Post each platform folder**, one by one:
    - Open `caption.txt`, copy all → open the platform app → create post → paste
    - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
@@ -40,10 +41,13 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 ## Emergency: package didn't export to Drive
 
 1. Check `data/iris.log` for `Outbox export failed`
-2. The package is still on disk: `output/outbox/<date>/<packageId>/` — post from there
+2. The package is safe: its items stay `Pending` in SQLite and the files stay at
+   `output/outbox/<date>/<packageId>/` — you can post directly from there
 3. Common causes: service-account key path wrong (`Outbox:GoogleDrive:ServiceAccountJsonPath`),
    Drive folder not shared with the service-account email, folder id wrong
-4. `POST /api/outbox/build` builds and exports a fresh package once fixed
+4. Once fixed: `POST /api/outbox/{packageId}/export` re-exports it immediately
+   (find the id via `GET /api/outbox?status=pending`). Or just wait — every daily
+   run retries pending exports before building anything new
 
 ## Emergency: pipeline crashed
 
@@ -73,6 +77,9 @@ A: Open `manifest.json` in the package — every platform entry has its exact `c
 
 **Q: How do I know which hook is making money?**
 A: `GET /api/monetization/conversions?limit=200`, look at the `utm_campaign` column. The hook with the highest `revenue_eur` sum is your top earner. This works exactly as before the pivot — the UTM link travels inside the caption you paste.
+
+**Q: Which platform actually converts?**
+A: `GET /api/monetization/summary` → `byPlatform` (joins, clicks, revenue per platform, best first). Each variant's caption link is stamped `utm_source=<platform>`, so as long as you paste captions without editing the link, joins attribute to the right platform automatically.
 
 **Q: Can I re-enable automated posting?**
 A: Set `Features:AutoPublish` to `true` in `appsettings.json` and restart — the provider adapters, OAuth endpoints, and DailyPostJob all come back. Only do this if the platform apps are verified; see the warning in the README.

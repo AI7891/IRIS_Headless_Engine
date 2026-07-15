@@ -167,6 +167,23 @@ public class SqliteRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CountOutboxItemsForDay_GroupsByPlatform_ExcludingOtherDays()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "tiktok"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg2", "instagram"));
+        var yesterday = NewOutboxItem("pkg0", "instagram");
+        yesterday.CreatedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        await _repo.SaveOutboxItemAsync(yesterday);
+
+        var counts = await _repo.CountOutboxItemsForDayAsync(DateTimeOffset.UtcNow);
+
+        Assert.Equal(2, counts["instagram"]);
+        Assert.Equal(1, counts["tiktok"]);
+        Assert.Equal(2, counts.Count);
+    }
+
+    [Fact]
     public async Task MarkOutboxPosted_SetsUrlAndTimestamp_AndReportsMissing()
     {
         await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
