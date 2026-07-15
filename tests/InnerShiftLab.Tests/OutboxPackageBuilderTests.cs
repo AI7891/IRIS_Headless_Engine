@@ -63,15 +63,12 @@ public class OutboxPackageBuilderTests : IDisposable
         foreach (var item in package.Items)
         {
             var format = PlatformFormats.Get(item.Platform);
-            // Titled platforms (YouTube) get description.txt; the rest caption.txt.
+            // Titled platforms (YouTube) get description.txt; the rest caption.txt. The
+            // tracking link (utm_campaign intact) is always inside that caption file.
             var captionFile = Path.Combine(package.PackageDir, item.Platform,
                 format.TitleMaxChars > 0 ? "description.txt" : "caption.txt");
             Assert.True(File.Exists(captionFile), $"caption file missing for {item.Platform}");
-            // Link-in-bio platforms carry the tracking link in link.txt instead of the caption.
-            var attributedFile = format.LinkInBio
-                ? Path.Combine(package.PackageDir, item.Platform, "link.txt")
-                : captionFile;
-            Assert.Contains("utm_campaign=hook-01", await File.ReadAllTextAsync(attributedFile));
+            Assert.Contains("utm_campaign=hook-01", await File.ReadAllTextAsync(captionFile));
         }
     }
 
@@ -87,7 +84,9 @@ public class OutboxPackageBuilderTests : IDisposable
 
         var manifest = JObject.Parse(await File.ReadAllTextAsync(package.ManifestPath));
         var youtube = ((JArray)manifest["items"]!).Single(i => i.Value<string>("platform") == "youtube");
-        Assert.Equal("youtube/description.txt", youtube.Value<string>("captionFile"));
+        Assert.Equal("youtube/description.txt", youtube.Value<string>("descriptionFile"));
+        Assert.Equal("youtube/title.txt", youtube.Value<string>("titleFile"));
+        Assert.Null(youtube.Value<string>("captionFile"));
     }
 
     [Fact]
@@ -124,16 +123,19 @@ public class OutboxPackageBuilderTests : IDisposable
     }
 
     [Fact]
-    public async Task Build_InstagramGetsLinkFileAndBioCta_OthersDoNot()
+    public async Task Build_Instagram_CaptionHasBioCueAndRawUrl_FacebookHasNeither()
     {
         var package = await Builder().BuildAsync(Slot());
 
-        var igDir = Path.Combine(package.PackageDir, "instagram");
-        Assert.True(File.Exists(Path.Combine(igDir, "link.txt")));
-        Assert.Contains("utm_source=instagram", await File.ReadAllTextAsync(Path.Combine(igDir, "link.txt")));
-        Assert.Contains(PlatformFormatter.LinkInBioCta,
-            await File.ReadAllTextAsync(Path.Combine(igDir, "caption.txt")));
-        Assert.False(File.Exists(Path.Combine(package.PackageDir, "facebook", "link.txt")));
+        var igCaption = await File.ReadAllTextAsync(Path.Combine(package.PackageDir, "instagram", "caption.txt"));
+        Assert.Contains(PlatformFormatter.LinkInBioCta, igCaption);
+        Assert.Contains("utm_source=instagram", igCaption);
+        Assert.Contains("https://linktr.ee/", igCaption);
+
+        var fbCaption = await File.ReadAllTextAsync(Path.Combine(package.PackageDir, "facebook", "caption.txt"));
+        Assert.DoesNotContain(PlatformFormatter.LinkInBioCta, fbCaption);
+        Assert.Contains("https://linktr.ee/", fbCaption);
+        Assert.False(File.Exists(Path.Combine(package.PackageDir, "instagram", "link.txt")));
     }
 
     [Fact]

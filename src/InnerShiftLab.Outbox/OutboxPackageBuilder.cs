@@ -75,15 +75,13 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
 
             var mediaPath = await ProvideMediaAsync(format, platformDir, visualText, media);
 
-            // Platforms with a separate title field get the caption as a description.
+            // Platforms with a separate title field (YouTube) get title.txt +
+            // description.txt; everyone else gets caption.txt. The tracking link
+            // lives inside the caption in all cases (below a bio cue where inert).
             var captionFileName = format.TitleMaxChars > 0 ? "description.txt" : "caption.txt";
             await File.WriteAllTextAsync(Path.Combine(platformDir, captionFileName), variant.Caption, ct);
             if (variant.Title.Length > 0)
                 await File.WriteAllTextAsync(Path.Combine(platformDir, "title.txt"), variant.Title, ct);
-            // Non-clickable-caption platforms: the caption carries a bio CTA, so ship
-            // the tracking link separately for the operator to wire into the bio/Linktree.
-            if (format.LinkInBio && variant.Link.Length > 0)
-                await File.WriteAllTextAsync(Path.Combine(platformDir, "link.txt"), variant.Link, ct);
 
             var item = new OutboxItem
             {
@@ -113,17 +111,19 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
             pillar = slot.Pillar.ToString(),
             createdAt,
             instructions = "Post each platform folder manually, then confirm with: POST /api/outbox/{packageId}/{platform}/confirm",
-            items = items.Select(i => new
+            items = items.Select(i =>
             {
-                platform = i.Platform,
-                dimensions = $"{i.Width}x{i.Height}",
-                media = Path.GetRelativePath(packageDir, i.MediaPath).Replace('\\', '/'),
-                captionFile = PlatformFormats.Get(i.Platform).TitleMaxChars > 0
-                    ? $"{i.Platform}/description.txt"
-                    : $"{i.Platform}/caption.txt",
-                titleFile = i.Title.Length > 0 ? $"{i.Platform}/title.txt" : null,
-                linkFile = File.Exists(Path.Combine(packageDir, i.Platform, "link.txt")) ? $"{i.Platform}/link.txt" : null,
-                confirmEndpoint = $"/api/outbox/{slot.SlotId}/{i.Platform}/confirm",
+                var titled = PlatformFormats.Get(i.Platform).TitleMaxChars > 0;
+                return new
+                {
+                    platform = i.Platform,
+                    dimensions = $"{i.Width}x{i.Height}",
+                    media = Path.GetRelativePath(packageDir, i.MediaPath).Replace('\\', '/'),
+                    captionFile = titled ? null : $"{i.Platform}/caption.txt",
+                    titleFile = i.Title.Length > 0 ? $"{i.Platform}/title.txt" : null,
+                    descriptionFile = titled ? $"{i.Platform}/description.txt" : null,
+                    confirmEndpoint = $"/api/outbox/{slot.SlotId}/{i.Platform}/confirm",
+                };
             }),
         };
         await File.WriteAllTextAsync(manifestPath, JsonConvert.SerializeObject(manifest, Formatting.Indented), ct);

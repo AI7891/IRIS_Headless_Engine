@@ -56,13 +56,11 @@ $@"🧠 {hookText}
         foreach (var f in PlatformFormats.All)
         {
             var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
-            // The stamped link lives in the caption for clickable platforms, and in
-            // Variant.Link (shipped as link.txt) for link-in-bio platforms.
-            var link = f.LinkInBio ? v.Link : v.Caption;
-            Assert.Contains("https://linktr.ee/dennis.p.santillan87?", link);
-            Assert.Contains("utm_campaign=hook-01", link);
-            Assert.Contains("utm_content=Integrate", link);
-            Assert.Contains("utm_term=iris", link);
+            // The stamped link always lives in the caption (below a bio cue where inert).
+            Assert.Contains("https://linktr.ee/dennis.p.santillan87?", v.Caption);
+            Assert.Contains("utm_campaign=hook-01", v.Caption);
+            Assert.Contains("utm_content=Integrate", v.Caption);
+            Assert.Contains("utm_term=iris", v.Caption);
         }
     }
 
@@ -74,9 +72,8 @@ $@"🧠 {hookText}
             var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
             // The engine emits a neutral utm_source=iris; each variant must carry its
             // own platform so a Skool join can be attributed per platform.
-            var link = f.LinkInBio ? v.Link : v.Caption;
-            Assert.Contains($"utm_source={f.Platform}", link);
-            Assert.DoesNotContain("utm_source=iris", link);
+            Assert.Contains($"utm_source={f.Platform}", v.Caption);
+            Assert.DoesNotContain("utm_source=iris", v.Caption);
         }
     }
 
@@ -86,10 +83,9 @@ $@"🧠 {hookText}
         foreach (var f in PlatformFormats.All)
         {
             var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
-            var link = f.LinkInBio ? v.Link : v.Caption;
             // Posting is manual now — utm_medium=organic is rewritten accordingly.
-            Assert.Contains("utm_medium=manual", link);
-            Assert.DoesNotContain("utm_medium=organic", link);
+            Assert.Contains("utm_medium=manual", v.Caption);
+            Assert.DoesNotContain("utm_medium=organic", v.Caption);
         }
     }
 
@@ -99,10 +95,9 @@ $@"🧠 {hookText}
         foreach (var f in PlatformFormats.All)
         {
             var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
-            var link = f.LinkInBio ? v.Link : v.Caption;
             // utm_campaign / utm_content carry hook + pillar and must never be touched.
-            Assert.Contains("utm_campaign=hook-01", link);
-            Assert.Contains("utm_content=Integrate", link);
+            Assert.Contains("utm_campaign=hook-01", v.Caption);
+            Assert.Contains("utm_content=Integrate", v.Caption);
         }
     }
 
@@ -112,33 +107,31 @@ $@"🧠 {hookText}
         var caption = "just a body line\n\n#Tag #Two";
         var v = PlatformFormatter.Format("facebook", "body", caption);
         Assert.DoesNotContain("utm_", v.Caption);
-        Assert.Equal("", v.Link);
-    }
-
-    [Fact]
-    public void Format_Instagram_ReplacesDeadUrlWithBioCta()
-    {
-        var v = PlatformFormatter.Format("instagram", "hook", EngineCaption("hook"));
-
-        // IG captions are not clickable: no raw URL in the caption, a bio CTA instead,
-        // and the stamped link available separately for the operator's bio/Linktree.
-        Assert.DoesNotContain("https://", v.Caption);
-        Assert.Contains(PlatformFormatter.LinkInBioCta, v.Caption);
-        Assert.Contains("utm_source=instagram", v.Link);
-    }
-
-    [Fact]
-    public void Format_Instagram_NoLinkInCaption_HasNoCtaAndEmptyLink()
-    {
-        var v = PlatformFormatter.Format("instagram", "hook", "just a body\n\n#Tag");
         Assert.DoesNotContain(PlatformFormatter.LinkInBioCta, v.Caption);
         Assert.Equal("", v.Link);
     }
 
-    [Fact]
-    public void Format_ClickablePlatforms_KeepLinkInCaption()
+    [Theory]
+    [InlineData("instagram")]
+    [InlineData("tiktok")]
+    public void Format_NonClickablePlatform_PrependsBioCueAndKeepsRawUrl(string platform)
     {
-        foreach (var f in PlatformFormats.All.Where(f => !f.LinkInBio))
+        var v = PlatformFormatter.Format(platform, "hook", EngineCaption("hook"));
+
+        // A "Link in bio → linktr.ee" cue appears above the raw UTM URL, which stays
+        // in the caption so the operator can paste it into the bio/Linktree.
+        Assert.Contains($"{PlatformFormatter.LinkInBioCta} linktr.ee", v.Caption);
+        Assert.Contains($"https://linktr.ee/dennis.p.santillan87?", v.Caption);
+        Assert.Contains($"utm_source={platform}", v.Caption);
+        // The cue comes before the URL.
+        Assert.True(v.Caption.IndexOf(PlatformFormatter.LinkInBioCta, StringComparison.Ordinal)
+                    < v.Caption.IndexOf("https://", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Format_ClickablePlatforms_KeepLinkWithoutBioCue()
+    {
+        foreach (var f in PlatformFormats.All.Where(f => f.LinksClickable))
         {
             var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
             Assert.Contains("https://linktr.ee/", v.Caption);

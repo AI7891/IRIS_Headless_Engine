@@ -47,12 +47,16 @@ public sealed class ContentRenderer : IContentRenderer
         };
         img.Mutate(c => c.Fill(bg));
 
-        // Wrap relative to the canvas width so wider/narrower formats fill their line length.
-        var lines = WrapText(text, Math.Max(12, 28 * width / 1080));
+        // Portrait 9:16 (TikTok / Reels / Shorts) has UI chrome down the right rail
+        // and across the bottom: cap the text region to the safe zone so nothing
+        // lands under it. Square / 4:5 keep the original near-full-height layout.
+        var portrait = height > width;
+        var textWidth = portrait ? width - 200 : width - 120;
+        var maxTextBottom = portrait ? (int)(height * 0.70) : height - 140;
+
+        // Wrap relative to the usable text width so lines fill without overrunning.
+        var lines = WrapText(text, Math.Max(12, 28 * textWidth / 960));
         var y = height / 5;
-        // Tall (9:16) canvases are for TikTok/Shorts, whose UI overlays cover roughly
-        // the bottom quarter (and the right edge): keep every glyph above that zone.
-        var maxTextBottom = height >= 1600 ? (int)(height * 0.72) : height - 140;
         // Resolve a font family: prefer an installed system font, otherwise load one from disk.
         var family = ResolveFontFamily();
         var font = family.CreateFont(48, SixLabors.Fonts.FontStyle.Bold);

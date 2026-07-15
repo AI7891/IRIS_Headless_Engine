@@ -16,20 +16,21 @@ public sealed record PlatformFormat(
     int MaxHashtags,
     bool PrefersVideo,
     int TitleMaxChars,
-    bool LinkInBio);
+    bool LinksClickable);
 
 public static class PlatformFormats
 {
     // Caption limits are the platform hard limits; hashtag counts are the
-    // engagement sweet spots, not the maximums. LinkInBio marks platforms whose
-    // captions are not clickable: a raw URL there is dead weight, so the caption
-    // carries a bio call-to-action and the link ships separately (link.txt).
+    // engagement sweet spots, not the maximums. LinksClickable=false marks
+    // platforms whose in-caption URLs are inert (Instagram, TikTok): the caption
+    // gets a "Link in bio →" cue above the raw URL so the operator can move it to
+    // the bio/Linktree. Facebook and YouTube descriptions are clickable.
     public static readonly IReadOnlyList<PlatformFormat> All = new[]
     {
-        new PlatformFormat("instagram", 1080, 1350, 2200,  8, PrefersVideo: false, TitleMaxChars: 0,   LinkInBio: true),
-        new PlatformFormat("facebook",  1080, 1350, 63206, 3, PrefersVideo: false, TitleMaxChars: 0,   LinkInBio: false),
-        new PlatformFormat("tiktok",    1080, 1920, 2200,  5, PrefersVideo: true,  TitleMaxChars: 0,   LinkInBio: false),
-        new PlatformFormat("youtube",   1080, 1920, 5000,  3, PrefersVideo: true,  TitleMaxChars: 100, LinkInBio: false),
+        new PlatformFormat("instagram", 1080, 1350, 2200,  8, PrefersVideo: false, TitleMaxChars: 0,   LinksClickable: false),
+        new PlatformFormat("facebook",  1080, 1350, 63206, 3, PrefersVideo: false, TitleMaxChars: 0,   LinksClickable: true),
+        new PlatformFormat("tiktok",    1080, 1920, 2200,  5, PrefersVideo: true,  TitleMaxChars: 0,   LinksClickable: false),
+        new PlatformFormat("youtube",   1080, 1920, 5000,  3, PrefersVideo: true,  TitleMaxChars: 100, LinksClickable: true),
     };
 
     public static PlatformFormat Get(string platform)
@@ -40,15 +41,15 @@ public static class PlatformFormats
 
 /// <summary>
 /// One platform-ready caption + title, paired with its format spec. <see cref="Link"/>
-/// is the platform-stamped tracking link; on LinkInBio platforms it is NOT inside
-/// the caption (the caption carries a bio call-to-action instead) — the operator
-/// points the bio/Linktree at it, or drops it in the first comment.
+/// is the platform-stamped tracking link; it always also lives inside the caption
+/// (below a "Link in bio →" cue on non-clickable platforms) so the operator can
+/// paste it into the bio/Linktree.
 /// </summary>
 public sealed record PlatformVariant(PlatformFormat Format, string Caption, string Title, string Link);
 
 public static class PlatformFormatter
 {
-    /// <summary>Call-to-action used instead of a raw URL on platforms with non-clickable captions.</summary>
+    /// <summary>Cue prepended above the raw URL on platforms whose captions aren't clickable.</summary>
     public const string LinkInBioCta = "🔗 Link in bio →";
 
     /// <summary>
@@ -56,7 +57,8 @@ public static class PlatformFormatter
     /// trims the body to the platform's caption limit (link and hashtags survive
     /// trimming untouched), stamps utm_source with the platform name so manual
     /// posts stay attributable per platform, and derives a title where needed.
-    /// On LinkInBio platforms the dead in-caption URL is replaced by a bio CTA.
+    /// On non-clickable platforms a "Link in bio → {domain}" cue is prepended above
+    /// the raw UTM URL, which stays in the caption so it can be pasted into the bio.
     /// </summary>
     public static PlatformVariant Format(string platform, string hookText, string caption)
     {
@@ -66,20 +68,19 @@ public static class PlatformFormatter
 
         var keptTags = hashtags.Take(format.MaxHashtags).ToList();
         var tail = new List<string>();
-        if (format.LinkInBio)
-        {
-            if (links.Count > 0) tail.Add(LinkInBioCta);
-        }
-        else
-        {
-            tail.AddRange(links);
-        }
+        if (!format.LinksClickable && links.Count > 0)
+            tail.Add($"{LinkInBioCta} {DomainOf(links[0])}");
+        tail.AddRange(links);
         if (keptTags.Count > 0) tail.Add(string.Join(" ", keptTags));
 
         var finalCaption = Assemble(body, tail, format.CaptionMaxChars);
         var title = format.TitleMaxChars > 0 ? Truncate(hookText, format.TitleMaxChars) : "";
         return new PlatformVariant(format, finalCaption, title, links.FirstOrDefault() ?? "");
     }
+
+    /// <summary>Host portion of a URL (e.g. "linktr.ee"), for the human-readable bio cue.</summary>
+    private static string DomainOf(string url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : url;
 
     /// <summary>
     /// Rewrites utm_source to the target platform and utm_medium to "manual" on a
