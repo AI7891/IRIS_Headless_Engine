@@ -60,12 +60,18 @@ public sealed class MonetizationLogger : IMonetizationLogger
             _ => null,
         };
 
-        var (camp, content) = ExtractUtms(payload.Ref ?? payload.Metadata);
+        var (camp, content, source) = ExtractUtms(payload.Ref ?? payload.Metadata);
+
+        // Platform attribution: explicit payload field wins, then the utm_source the
+        // outbox stamped per platform variant, then "skool" as the last resort.
+        var platform = !string.IsNullOrEmpty(payload.Platform) ? payload.Platform
+            : !string.IsNullOrEmpty(source) ? source
+            : "skool";
 
         var c = new Conversion
         {
             PostId = payload.PostId ?? "",
-            Platform = payload.Platform ?? "skool",
+            Platform = platform,
             UtmCampaign = camp,
             UtmContent = content,
             EventType = "skool_join",
@@ -92,26 +98,41 @@ public sealed class MonetizationLogger : IMonetizationLogger
             })
             .OrderByDescending(s => s.RevenueEur)
             .ToList();
+        var byPlatform = all
+            .Where(c => !string.IsNullOrEmpty(c.Platform))
+            .GroupBy(c => c.Platform, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new PlatformStat
+            {
+                Platform = g.Key.ToLowerInvariant(),
+                Joins = g.Count(c => c.EventType == "skool_join"),
+                Clicks = g.Count(c => c.EventType == "click"),
+                RevenueEur = g.Where(c => c.RevenueEur.HasValue).Sum(c => c.RevenueEur!.Value),
+            })
+            .OrderByDescending(s => s.RevenueEur)
+            .ToList();
         return new MonetizationSummary
         {
             TotalJoins = all.Count(c => c.EventType == "skool_join"),
             TotalClicks = all.Count(c => c.EventType == "click"),
             TotalRevenueEur = all.Where(c => c.RevenueEur.HasValue).Sum(c => c.RevenueEur!.Value),
             ByCampaign = byCampaign,
+            ByPlatform = byPlatform,
         };
     }
 
     public async Task<IReadOnlyList<Conversion>> GetConversionsAsync(int limit = 100)
         => await _repo.GetConversionsAsync(limit);
 
-    private static (string Campaign, string Content) ExtractUtms(string? s)
+    private static (string Campaign, string Content, string Source) ExtractUtms(string? s)
     {
-        if (string.IsNullOrEmpty(s)) return ("", "");
+        if (string.IsNullOrEmpty(s)) return ("", "", "");
         var m = Regex.Match(s, "utm_campaign=([^&]+)");
         var m2 = Regex.Match(s, "utm_content=([^&]+)");
+        var m3 = Regex.Match(s, "utm_source=([^&]+)");
         return (
             m.Success ? Uri.UnescapeDataString(m.Groups[1].Value) : "",
-            m2.Success ? Uri.UnescapeDataString(m2.Groups[1].Value) : ""
+            m2.Success ? Uri.UnescapeDataString(m2.Groups[1].Value) : "",
+            m3.Success ? Uri.UnescapeDataString(m3.Groups[1].Value) : ""
         );
     }
 
@@ -131,6 +152,15 @@ public sealed class MonetizationSummary
     public int TotalClicks { get; set; }
     public decimal TotalRevenueEur { get; set; }
     public List<CampaignStat> ByCampaign { get; set; } = new();
+    public List<PlatformStat> ByPlatform { get; set; } = new();
+}
+
+public sealed class PlatformStat
+{
+    public string Platform { get; set; } = "";
+    public int Joins { get; set; }
+    public int Clicks { get; set; }
+    public decimal RevenueEur { get; set; }
 }
 
 public sealed class CampaignStat

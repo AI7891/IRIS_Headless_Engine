@@ -50,13 +50,46 @@ $@"🧠 {hookText}
     }
 
     [Fact]
-    public void Format_KeepsUtmLinkIntact()
+    public void Format_KeepsUtmCampaignAndContentIntact()
     {
         foreach (var f in PlatformFormats.All)
         {
             var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
-            Assert.Contains(UtmLink, v.Caption);
+            Assert.Contains("https://linktr.ee/dennis.p.santillan87?", v.Caption);
+            Assert.Contains("utm_campaign=hook-01", v.Caption);
+            Assert.Contains("utm_content=Integrate", v.Caption);
+            Assert.Contains("utm_term=iris", v.Caption);
         }
+    }
+
+    [Fact]
+    public void Format_StampsUtmSourceWithPlatform()
+    {
+        foreach (var f in PlatformFormats.All)
+        {
+            var v = PlatformFormatter.Format(f.Platform, "hook", EngineCaption("hook"));
+            // The engine emits utm_source=auto; each variant must carry its own platform
+            // so a Skool join can be attributed to Instagram vs TikTok vs YouTube.
+            Assert.Contains($"utm_source={f.Platform}", v.Caption);
+            Assert.DoesNotContain("utm_source=auto", v.Caption);
+        }
+    }
+
+    [Fact]
+    public void Format_LinkWithoutUtmSource_GetsItAppended()
+    {
+        var caption = "body\n\nhttps://linktr.ee/x?utm_campaign=hook-01\n\n#Tag";
+        var v = PlatformFormatter.Format("tiktok", "body", caption);
+        Assert.Contains("utm_campaign=hook-01&utm_source=tiktok", v.Caption);
+    }
+
+    [Fact]
+    public void Format_NonTrackingLink_IsLeftUntouched()
+    {
+        var caption = "body\n\nhttps://example.com/article\n\n#Tag";
+        var v = PlatformFormatter.Format("instagram", "body", caption);
+        Assert.Contains("https://example.com/article", v.Caption);
+        Assert.DoesNotContain("example.com/article?", v.Caption);
     }
 
     [Fact]
@@ -66,7 +99,8 @@ $@"🧠 {hookText}
         var v = PlatformFormatter.Format("tiktok", longHook, EngineCaption(longHook));
 
         Assert.True(v.Caption.Length <= 2200, $"caption was {v.Caption.Length} chars");
-        Assert.Contains(UtmLink, v.Caption);
+        Assert.Contains("utm_campaign=hook-01", v.Caption);
+        Assert.Contains("utm_source=tiktok", v.Caption);
         Assert.Contains("#IntegrateTheRejected", v.Caption);
         Assert.Contains("…", v.Caption);
     }

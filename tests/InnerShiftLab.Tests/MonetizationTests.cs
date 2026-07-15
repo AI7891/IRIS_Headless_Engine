@@ -60,6 +60,69 @@ public class MonetizationTests
     }
 
     [Fact]
+    public async Task SkoolJoin_UsesUtmSourceAsPlatform_WhenPayloadHasNone()
+    {
+        var (logger, repo) = NewLogger();
+        var body = JsonConvert.SerializeObject(new
+        {
+            plan = "inner_circle",
+            @ref = "utm_source=tiktok&utm_campaign=hookA&utm_content=Identify",
+        });
+
+        await logger.LogSkoolJoinAsync(body);
+
+        Assert.Equal("tiktok", Assert.Single(repo.Conversions).Platform);
+    }
+
+    [Fact]
+    public async Task SkoolJoin_ExplicitPayloadPlatform_WinsOverUtmSource()
+    {
+        var (logger, repo) = NewLogger();
+        var body = JsonConvert.SerializeObject(new
+        {
+            plan = "inner_circle",
+            platform = "instagram",
+            @ref = "utm_source=tiktok&utm_campaign=hookA",
+        });
+
+        await logger.LogSkoolJoinAsync(body);
+
+        Assert.Equal("instagram", Assert.Single(repo.Conversions).Platform);
+    }
+
+    [Fact]
+    public async Task SkoolJoin_NoPlatformAnywhere_FallsBackToSkool()
+    {
+        var (logger, repo) = NewLogger();
+        var body = JsonConvert.SerializeObject(new { plan = "inner_circle", @ref = "utm_campaign=hookA" });
+
+        await logger.LogSkoolJoinAsync(body);
+
+        Assert.Equal("skool", Assert.Single(repo.Conversions).Platform);
+    }
+
+    [Fact]
+    public async Task Summary_AggregatesByPlatform()
+    {
+        var (logger, _) = NewLogger();
+        await logger.LogClickAsync("p1", "instagram", "hookA", "Identify");
+        await logger.LogSkoolJoinAsync(JsonConvert.SerializeObject(
+            new { plan = "inner_circle", @ref = "utm_source=instagram&utm_campaign=hookA" }));
+        await logger.LogSkoolJoinAsync(JsonConvert.SerializeObject(
+            new { plan = "root_work_lab", @ref = "utm_source=tiktok&utm_campaign=hookA" }));
+
+        var summary = await logger.GetSummaryAsync();
+
+        // Highest-revenue platform first — this answers "which platform converts?".
+        Assert.Equal("tiktok", summary.ByPlatform.First().Platform);
+        Assert.Equal(197m, summary.ByPlatform.First().RevenueEur);
+        var ig = summary.ByPlatform.Single(p => p.Platform == "instagram");
+        Assert.Equal(1, ig.Joins);
+        Assert.Equal(1, ig.Clicks);
+        Assert.Equal(37m, ig.RevenueEur);
+    }
+
+    [Fact]
     public async Task Summary_AggregatesRevenueAndCountsByCampaign()
     {
         var (logger, repo) = NewLogger();

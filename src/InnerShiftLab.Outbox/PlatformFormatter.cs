@@ -43,12 +43,14 @@ public static class PlatformFormatter
     /// <summary>
     /// Reshapes an engine-built caption for one platform: caps the hashtag count,
     /// trims the body to the platform's caption limit (link and hashtags survive
-    /// trimming untouched), and derives a title where the platform needs one.
+    /// trimming untouched), stamps utm_source with the platform name so manual
+    /// posts stay attributable per platform, and derives a title where needed.
     /// </summary>
     public static PlatformVariant Format(string platform, string hookText, string caption)
     {
         var format = PlatformFormats.Get(platform);
         var (body, links, hashtags) = Dissect(caption);
+        links = links.Select(l => StampUtmSource(l, format.Platform)).ToList();
 
         var keptTags = hashtags.Take(format.MaxHashtags).ToList();
         var tail = new List<string>();
@@ -58,6 +60,23 @@ public static class PlatformFormatter
         var finalCaption = Assemble(body, tail, format.CaptionMaxChars);
         var title = format.TitleMaxChars > 0 ? Truncate(hookText, format.TitleMaxChars) : "";
         return new PlatformVariant(format, finalCaption, title);
+    }
+
+    /// <summary>
+    /// Rewrites utm_source in a tracking link to the target platform (the engine
+    /// emits a platform-agnostic caption; the variant is what gets posted where).
+    /// Without this, a Skool join could be traced to a hook but never to the
+    /// platform it came from. Links without UTM parameters are left untouched.
+    /// </summary>
+    private static string StampUtmSource(string link, string platform)
+    {
+        if (!link.Contains("utm_", StringComparison.OrdinalIgnoreCase)) return link;
+        var stamped = System.Text.RegularExpressions.Regex.Replace(
+            link, "(utm_source=)[^&]*", "${1}" + Uri.EscapeDataString(platform),
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!stamped.Contains("utm_source=", StringComparison.OrdinalIgnoreCase))
+            stamped += (stamped.Contains('?') ? "&" : "?") + $"utm_source={Uri.EscapeDataString(platform)}";
+        return stamped;
     }
 
     /// <summary>Splits a caption into body lines, link lines, and an ordered de-duplicated hashtag list.</summary>
