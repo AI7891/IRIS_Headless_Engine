@@ -34,6 +34,14 @@ public sealed class OutboxSettings
     /// </summary>
     public bool RenderVideo { get; set; } = true;
 
+    /// <summary>
+    /// Feed the AI content pipeline (Anthropic script → Pexels carousel →
+    /// ElevenLabs voiceover → composed video) into each package instead of plain
+    /// text cards. Opt-in: it costs API credits and needs the ContentCreator keys.
+    /// Any pipeline failure falls back to text-card rendering (never sinks a run).
+    /// </summary>
+    public bool UseContentCreator { get; set; }
+
     public GoogleDriveSettings GoogleDrive { get; set; } = new();
 }
 

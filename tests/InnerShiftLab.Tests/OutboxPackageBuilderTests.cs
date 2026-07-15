@@ -1,3 +1,4 @@
+using InnerShiftLab.ContentCreator;
 using InnerShiftLab.Core;
 using InnerShiftLab.Engine;
 using InnerShiftLab.Outbox;
@@ -12,6 +13,7 @@ public class OutboxPackageBuilderTests : IDisposable
     private readonly string _outputRoot;
     private readonly FakeRepository _repo = new();
     private readonly FakeRenderer _renderer = new();
+    private readonly IrisSettings _iris = new() { LinktreeUrl = "https://linktr.ee/test" };
 
     public OutboxPackageBuilderTests()
     {
@@ -23,8 +25,8 @@ public class OutboxPackageBuilderTests : IDisposable
         try { Directory.Delete(_outputRoot, true); } catch { /* best effort */ }
     }
 
-    private OutboxPackageBuilder Builder(OutboxSettings? settings = null)
-        => new(_renderer, _repo, settings ?? new OutboxSettings(),
+    private OutboxPackageBuilder Builder(OutboxSettings? settings = null, IContentCreationPipeline? creator = null)
+        => new(_renderer, _repo, settings ?? new OutboxSettings(), _iris, creator,
             _outputRoot, NullLogger<OutboxPackageBuilder>.Instance);
 
     private static PostSlot Slot() => new()
@@ -90,36 +92,63 @@ public class OutboxPackageBuilderTests : IDisposable
     }
 
     [Fact]
-    public async Task Build_MediaOverride_CopiesProvidedMediaInsteadOfRendering()
+    public async Task Build_WithContentCreator_UsesComposedMediaCaptionAndTitle()
     {
         var image = Path.Combine(_outputRoot, "slide1.png");
         var video = Path.Combine(_outputRoot, "composed.mp4");
         await File.WriteAllTextAsync(image, "ai-carousel-image");
         await File.WriteAllTextAsync(video, "ai-composed-video");
+        var creator = new FakeCreator
+        {
+            Content = new ComposedContent
+            {
+                ScriptId = "sc1", Title = "AI Title", Caption = "AI caption body",
+                SlideImagePaths = new[] { image }, VideoPath = video,
+            },
+        };
+        var settings = new OutboxSettings { UseContentCreator = true };
 
-        var package = await Builder().BuildAsync(Slot(), platforms: null,
-            new PackageMediaOverride(image, video));
+        var package = await Builder(settings, creator).BuildAsync(Slot());
 
+        // Image platforms get the resized carousel slide; video platforms the composed video.
         var ig = Assert.Single(package.Items, i => i.Platform == "instagram");
-        Assert.EndsWith(".png", ig.MediaPath);
         Assert.Equal("ai-carousel-image", await File.ReadAllTextAsync(ig.MediaPath));
-
         var tiktok = Assert.Single(package.Items, i => i.Platform == "tiktok");
         Assert.EndsWith(".mp4", tiktok.MediaPath);
         Assert.Equal("ai-composed-video", await File.ReadAllTextAsync(tiktok.MediaPath));
 
-        Assert.Equal(0, _renderer.ImageCalls); // nothing was rendered
+        // AI caption is used (with the UTM link re-appended), YouTube title is the AI title.
+        Assert.Contains("AI caption body", ig.Caption);
+        Assert.Contains("utm_campaign=hook-01", ig.Caption);
+        Assert.Equal("AI Title", Assert.Single(package.Items, i => i.Platform == "youtube").Title);
+        Assert.Equal(0, _renderer.ImageCalls); // no text cards rendered
     }
 
     [Fact]
-    public async Task Build_MediaOverride_MissingFiles_FallsBackToRendering()
+    public async Task Build_ContentCreatorThrows_FallsBackToTextCards()
     {
-        var package = await Builder().BuildAsync(Slot(), platforms: new[] { "instagram" },
-            new PackageMediaOverride("/nope/img.png", "/nope/vid.mp4"));
+        var creator = new FakeCreator { Throw = true };
+        var settings = new OutboxSettings { UseContentCreator = true, Platforms = new[] { "instagram" } };
 
+        var package = await Builder(settings, creator).BuildAsync(Slot());
+
+        // The pipeline failure is swallowed; the package still builds via text cards.
         var ig = Assert.Single(package.Items);
         Assert.True(File.Exists(ig.MediaPath));
-        Assert.Equal(1, _renderer.ImageCalls);
+        Assert.True(_renderer.ImageCalls > 0);
+    }
+
+    [Fact]
+    public async Task Build_CreatorPresentButDisabled_RendersTextCards()
+    {
+        var creator = new FakeCreator { Content = new ComposedContent { ScriptId = "sc1" } };
+        // UseContentCreator defaults to false.
+        var package = await Builder(new OutboxSettings { Platforms = new[] { "instagram" } }, creator)
+            .BuildAsync(Slot());
+
+        Assert.False(creator.Called);
+        Assert.True(_renderer.ImageCalls > 0);
+        Assert.NotEmpty(package.Items);
     }
 
     [Fact]
@@ -257,5 +286,37 @@ public class OutboxPackageBuilderTests : IDisposable
             File.WriteAllText(outPath, "video");
             return Task.FromResult(outPath);
         }
+
+        // Resize helpers stub as a byte-preserving copy so tests can assert on content.
+        public Task<string> ResizeImageAsync(string sourcePath, string outPath, int width, int height)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+            File.Copy(sourcePath, outPath, overwrite: true);
+            return Task.FromResult(outPath);
+        }
+
+        public Task<string> ResizeVideoAsync(string sourcePath, string outPath, int width, int height)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+            File.Copy(sourcePath, outPath, overwrite: true);
+            return Task.FromResult(outPath);
+        }
+    }
+
+    private sealed class FakeCreator : IContentCreationPipeline
+    {
+        public ComposedContent Content = new();
+        public bool Throw;
+        public bool Called;
+
+        public Task<ComposedContent> CreateAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default)
+        {
+            Called = true;
+            if (Throw) throw new InvalidOperationException("anthropic down");
+            return Task.FromResult(Content);
+        }
+
+        public Task<IReadOnlyList<PostSlot>> CreateAndPublishAsync(string? keywords, string[] platforms, CancellationToken ct = default)
+            => throw new NotSupportedException();
     }
 }

@@ -19,6 +19,12 @@ public interface IContentRenderer
     Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default", int width = 1080, int height = 1080);
     Task<string> RenderPdfAsync(string title, IEnumerable<string> sections, string? outPath = null);
     Task<string> RenderVideoAsync(string text, string backgroundPath, string? outPath = null, int durationSec = 15);
+
+    /// <summary>Resizes an existing image to exactly width×height, cover-cropping centred (no stretch).</summary>
+    Task<string> ResizeImageAsync(string sourcePath, string outPath, int width, int height);
+
+    /// <summary>Re-encodes an existing video to exactly width×height, cover-cropping centred (no stretch).</summary>
+    Task<string> ResizeVideoAsync(string sourcePath, string outPath, int width, int height);
 }
 
 public sealed class ContentRenderer : IContentRenderer
@@ -144,6 +150,50 @@ public sealed class ContentRenderer : IContentRenderer
             throw new InvalidOperationException($"ffmpeg failed: {err}");
         }
         _log.LogInformation("Rendered video: {Path}", outPath);
+        return outPath;
+    }
+
+    public async Task<string> ResizeImageAsync(string sourcePath, string outPath, int width, int height)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+        using var img = await SixLabors.ImageSharp.Image.LoadAsync(sourcePath);
+        // Cover-crop centred: fill the target box without distortion, trimming overflow.
+        img.Mutate(c => c.Resize(new ResizeOptions
+        {
+            Size = new SixLabors.ImageSharp.Size(width, height),
+            Mode = ResizeMode.Crop,
+            Position = AnchorPositionMode.Center,
+        }));
+        await img.SaveAsPngAsync(outPath);
+        _log.LogInformation("Resized image to {W}x{H}: {Path}", width, height, outPath);
+        return outPath;
+    }
+
+    public async Task<string> ResizeVideoAsync(string sourcePath, string outPath, int width, int height)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+        var psi = new System.Diagnostics.ProcessStartInfo("ffmpeg")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-y");
+        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
+        // scale to cover, then centre-crop to the exact target — no stretching.
+        psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(
+            $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}");
+        psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("yuv420p");
+        psi.ArgumentList.Add(outPath);
+
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        await p.WaitForExitAsync();
+        if (p.ExitCode != 0)
+        {
+            var err = await p.StandardError.ReadToEndAsync();
+            throw new InvalidOperationException($"ffmpeg resize failed: {err}");
+        }
+        _log.LogInformation("Resized video to {W}x{H}: {Path}", width, height, outPath);
         return outPath;
     }
 

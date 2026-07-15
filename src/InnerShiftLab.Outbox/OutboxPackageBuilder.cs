@@ -4,6 +4,7 @@
 //  plus a manifest.json, all under output/outbox/<date>/<packageId>/.
 //  Every variant is also written to the SQLite outbox table (source of truth).
 // =============================================================================
+using InnerShiftLab.ContentCreator;
 using InnerShiftLab.Core;
 using InnerShiftLab.Engine;
 using Newtonsoft.Json;
@@ -21,22 +22,19 @@ public sealed record OutboxPackage(
     string ManifestPath,
     IReadOnlyList<OutboxItem> Items);
 
-/// <summary>
-/// Pre-produced media to package instead of rendering text cards — used to route
-/// the AI content pipeline's output (carousel image + composed video) to the outbox.
-/// </summary>
-public sealed record PackageMediaOverride(string? ImagePath, string? VideoPath);
+/// <summary>Pre-produced media (from the AI content pipeline) to package instead of text cards.</summary>
+internal sealed record PackageMedia(string? ImagePath, string? VideoPath);
 
 public interface IOutboxPackageBuilder
 {
     /// <summary>
     /// Builds the package for one slot. <paramref name="platforms"/> restricts the
-    /// variants (used to honor the daily per-platform cap); null means all
-    /// configured platforms. <paramref name="media"/> supplies pre-produced media;
-    /// null renders text cards.
+    /// variants; null means all configured platforms. When the content creator is
+    /// enabled its composed media/caption/title are used; otherwise text cards are
+    /// rendered.
     /// </summary>
     Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null,
-        PackageMediaOverride? media = null, CancellationToken ct = default);
+        CancellationToken ct = default);
 }
 
 public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
@@ -44,17 +42,20 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
     private readonly IContentRenderer _renderer;
     private readonly IRepository _repo;
     private readonly OutboxSettings _settings;
+    private readonly IrisSettings _iris;
+    private readonly IContentCreationPipeline? _creator;
     private readonly string _outputRoot;
     private readonly ILogger<OutboxPackageBuilder> _log;
 
     public OutboxPackageBuilder(IContentRenderer renderer, IRepository repo, OutboxSettings settings,
-        string outputRoot, ILogger<OutboxPackageBuilder> log)
+        IrisSettings iris, IContentCreationPipeline? creator, string outputRoot, ILogger<OutboxPackageBuilder> log)
     {
-        _renderer = renderer; _repo = repo; _settings = settings; _outputRoot = outputRoot; _log = log;
+        _renderer = renderer; _repo = repo; _settings = settings; _iris = iris;
+        _creator = creator; _outputRoot = outputRoot; _log = log;
     }
 
     public async Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null,
-        PackageMediaOverride? media = null, CancellationToken ct = default)
+        CancellationToken ct = default)
     {
         var createdAt = DateTimeOffset.UtcNow;
         var packageDir = Path.Combine(_outputRoot, "outbox", createdAt.ToString("yyyy-MM-dd"), slot.SlotId);
@@ -63,12 +64,41 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
         var targets = _settings.EffectivePlatforms
             .Where(p => platforms == null || platforms.Contains(p, StringComparer.OrdinalIgnoreCase));
         var visualText = string.IsNullOrWhiteSpace(slot.HookText) ? slot.Caption : slot.HookText;
+        var caption = slot.Caption;
+
+        // AI content pipeline (opt-in). Any failure falls back to text-card rendering
+        // — an external API outage must never sink the daily run.
+        PackageMedia? media = null;
+        if (_creator != null && _settings.UseContentCreator)
+        {
+            try
+            {
+                var content = await _creator.CreateAsync(keywords: slot.HookText, slideCount: null, ct);
+                media = new PackageMedia(content.SlideImagePaths.FirstOrDefault(), content.VideoPath);
+                if (!string.IsNullOrWhiteSpace(content.Caption))
+                {
+                    // Prefer the AI caption, but re-append the tracked link (shared format).
+                    var link = UtmLinks.BuildTracked(_iris.LinktreeUrl, slot.HookId, slot.Pillar.ToString());
+                    caption = $"{content.Caption}\n\n{link}";
+                }
+                if (!string.IsNullOrWhiteSpace(content.Title))
+                    visualText = content.Title;
+                _log.LogInformation("Outbox: using AI content {ScriptId} for package {PackageId}",
+                    content.ScriptId, slot.SlotId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning(ex, "Content creator failed for {PackageId}; falling back to text cards", slot.SlotId);
+                media = null;
+            }
+        }
+
         var items = new List<OutboxItem>();
 
         foreach (var platform in targets)
         {
             ct.ThrowIfCancellationRequested();
-            var variant = PlatformFormatter.Format(platform, visualText, slot.Caption);
+            var variant = PlatformFormatter.Format(platform, visualText, caption);
             var format = variant.Format;
             var platformDir = Path.Combine(packageDir, format.Platform);
             Directory.CreateDirectory(platformDir);
@@ -136,26 +166,32 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
     }
 
     /// <summary>
-    /// Copies pre-produced media into the platform folder when supplied (video-first
-    /// platforms prefer the video, image platforms the image), otherwise renders a
-    /// text card — and, for video platforms, wraps it into an mp4 when possible.
+    /// Provides the platform's media. With AI content: video platforms get the
+    /// composed video re-encoded to the profile, image platforms get the lead
+    /// carousel slide cover-cropped to the profile. Otherwise (or on any resize
+    /// failure) renders a text card, wrapping it into an mp4 for video platforms.
     /// </summary>
     private async Task<string> ProvideMediaAsync(PlatformFormat format, string platformDir,
-        string visualText, PackageMediaOverride? media)
+        string visualText, PackageMedia? media)
     {
         if (media != null)
         {
-            var source = format.PrefersVideo
-                ? (media.VideoPath ?? media.ImagePath)
-                : (media.ImagePath ?? media.VideoPath);
-            if (!string.IsNullOrEmpty(source) && File.Exists(source))
+            try
             {
-                var dest = Path.Combine(platformDir, "media" + Path.GetExtension(source));
-                File.Copy(source, dest, overwrite: true);
-                return dest;
+                if (format.PrefersVideo && !string.IsNullOrEmpty(media.VideoPath) && File.Exists(media.VideoPath))
+                    return await _renderer.ResizeVideoAsync(
+                        media.VideoPath, Path.Combine(platformDir, "media.mp4"), format.Width, format.Height);
+
+                var image = media.ImagePath ?? media.VideoPath;
+                if (!format.PrefersVideo && !string.IsNullOrEmpty(image) && File.Exists(image))
+                    return await _renderer.ResizeImageAsync(
+                        image, Path.Combine(platformDir, "media.png"), format.Width, format.Height);
             }
-            _log.LogWarning("Pre-produced media missing for {Platform} ({Source}); rendering a text card instead",
-                format.Platform, source);
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Resizing AI media for {Platform} failed; falling back to a text card", format.Platform);
+            }
         }
 
         var mediaPath = await _renderer.RenderImageAsync(

@@ -188,6 +188,10 @@ try
         sp.GetRequiredService<IContentRenderer>(),
         sp.GetRequiredService<IRepository>(),
         outboxSettings,
+        irisSettings,
+        // The AI content pipeline is wired in only when opted in — otherwise packages
+        // render text cards and no API credits are spent.
+        outboxSettings.UseContentCreator ? sp.GetRequiredService<IContentCreationPipeline>() : null,
         AppPaths.OutputDir(appRoot),
         sp.GetRequiredService<ILogger<OutboxPackageBuilder>>()));
     builder.Services.AddSingleton<IPackageExporter>(sp => outboxSettings.GoogleDrive.Enabled
@@ -330,10 +334,6 @@ try
             ? Results.NotFound(new { message = "Nothing to package: no hooks available or daily per-platform caps reached" })
             : Results.Ok(packages);
     });
-
-    // AI content pipeline -> outbox: script + carousel + voiceover packaged for manual posting.
-    app.MapPost("/api/outbox/creator", async (CreatorRequest? req, IOutboxService o, CancellationToken ct) =>
-        Results.Ok(await o.BuildCreatorPackageAsync(req?.Keywords, req?.SlideCount, ct)));
 
     app.MapPost("/api/outbox/{packageId}/export", async (string packageId, IOutboxService o, CancellationToken ct) =>
     {
