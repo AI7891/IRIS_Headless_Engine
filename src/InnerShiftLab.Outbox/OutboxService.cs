@@ -20,11 +20,15 @@ namespace InnerShiftLab.Outbox;
 public interface IOutboxService
 {
     /// <summary>
-    /// Retries any pending exports, then drains the queue into packages
-    /// (auto-curating top hooks when empty) until the daily per-platform cap is
-    /// reached. Empty when no hooks exist or every platform is already at cap.
+    /// Retries any pending exports, then builds and exports the next
+    /// <see cref="OutboxSettings.PackagesPerRun"/> queued packages (auto-curating
+    /// top hooks when the queue is empty). Per-package try/catch: one failure does
+    /// not block the rest. Empty when no hooks are available.
     /// </summary>
     Task<IReadOnlyList<OutboxPackage>> BuildDailyPackagesAsync(CancellationToken ct = default);
+
+    /// <summary>Single-package convenience path: the first package from <see cref="BuildDailyPackagesAsync"/>, or null.</summary>
+    Task<OutboxPackage?> BuildDailyPackageAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Runs the AI content pipeline (script -> carousel -> voiceover -> composed
@@ -71,11 +75,14 @@ public sealed class OutboxService : IOutboxService
     {
         await RetryPendingExportsAsync(ct);
 
+        var perRun = Math.Max(1, _settings.PackagesPerRun);
         var queued = _engine.GetCurrentQueue();
         if (queued.Count == 0)
         {
             _log.LogInformation("Outbox: queue empty, auto-curating from top hooks");
-            var top = _engine.GetAllHooks().OrderByDescending(h => h.Score).Take(3).ToList();
+            // Never starve the run: curate at least enough hooks to fill PackagesPerRun.
+            var top = _engine.GetAllHooks().OrderByDescending(h => h.Score)
+                .Take(Math.Max(3, perRun)).ToList();
             foreach (var h in top)
                 _engine.Enqueue(h.Id, h.PrimaryPillar, h.BestFor);
             queued = _engine.GetCurrentQueue();
@@ -87,39 +94,33 @@ public sealed class OutboxService : IOutboxService
             return Array.Empty<OutboxPackage>();
         }
 
-        // Per-platform daily cap, seeded from what the outbox already produced today
-        // (SQLite, not memory — restarts must not reset it).
-        var counts = new Dictionary<string, int>(
-            await _repo.CountOutboxItemsForDayAsync(DateTimeOffset.UtcNow), StringComparer.OrdinalIgnoreCase);
-        var max = Math.Max(0, _irisSettings.MaxPostsPerDayPerPlatform);
-
         var packages = new List<OutboxPackage>();
-        foreach (var slot in queued)
+        foreach (var slot in queued.Take(perRun))
         {
             ct.ThrowIfCancellationRequested();
-            var allowed = _settings.EffectivePlatforms.Where(p => counts.GetValueOrDefault(p) < max).ToArray();
-            if (allowed.Length == 0)
+            try
             {
-                _log.LogInformation("Outbox: daily cap ({Max}/platform) reached; {Remaining} slot(s) stay queued",
-                    max, queued.Count - packages.Count);
-                break;
+                var package = await _builder.BuildAsync(slot, platforms: null, media: null, ct);
+                await TryExportAsync(package, ct);
+
+                // Track the slot in the posts table for continuity; it stays Queued
+                // until the operator confirms every platform, then flips to Published.
+                slot.Status = PostStatus.Queued;
+                await _repo.SavePostAsync(slot);
+                _engine.RemoveFromQueue(slot);
+                packages.Add(package);
             }
-
-            var package = await _builder.BuildAsync(slot, allowed, media: null, ct);
-            await TryExportAsync(package, ct);
-
-            // Track the slot in the posts table for continuity; it stays Queued until
-            // the operator confirms every platform, then flips to Published.
-            slot.Status = PostStatus.Queued;
-            await _repo.SavePostAsync(slot);
-            _engine.RemoveFromQueue(slot);
-
-            foreach (var item in package.Items)
-                counts[item.Platform] = counts.GetValueOrDefault(item.Platform) + 1;
-            packages.Add(package);
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // One package failing to build must not sink the others in the run.
+                _log.LogError(ex, "Outbox: building package for slot {Slot} failed; leaving it queued", slot.SlotId);
+            }
         }
         return packages;
     }
+
+    public async Task<OutboxPackage?> BuildDailyPackageAsync(CancellationToken ct = default)
+        => (await BuildDailyPackagesAsync(ct)).FirstOrDefault();
 
     public async Task<OutboxPackage> BuildCreatorPackageAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default)
     {

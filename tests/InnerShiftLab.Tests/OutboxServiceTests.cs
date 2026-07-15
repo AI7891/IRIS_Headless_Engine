@@ -14,8 +14,8 @@ public class OutboxServiceTests : IDisposable
     private readonly FakeEngine _engine = new();
     private readonly FakeBuilder _builder;
     private readonly FakeExporter _exporter = new();
-    private readonly IrisSettings _irisSettings = new() { MaxPostsPerDayPerPlatform = 2 };
-    private readonly OutboxSettings _outboxSettings = new() { Platforms = new[] { "instagram", "tiktok" } };
+    private readonly IrisSettings _irisSettings = new();
+    private readonly OutboxSettings _outboxSettings = new() { Platforms = new[] { "instagram", "tiktok" }, PackagesPerRun = 1 };
 
     public OutboxServiceTests()
     {
@@ -33,60 +33,47 @@ public class OutboxServiceTests : IDisposable
             NullLogger<OutboxService>.Instance);
 
     [Fact]
-    public async Task BuildDaily_EmptyQueue_AutoCuratesAndDrainsQueueWithinCaps()
+    public async Task BuildDaily_DefaultPackagesPerRun_BuildsOne_BestHookFirst()
     {
         var packages = await Service().BuildDailyPackagesAsync();
 
-        // Two hooks auto-curated; cap is 2/platform and each package uses 1 per platform,
-        // so both get packaged, best-scored hook first.
+        // PackagesPerRun defaults to 1: the best-scored hook is packaged, the rest
+        // stay queued. Auto-curation still curates >= 3 so the queue isn't starved.
+        var package = Assert.Single(packages);
+        Assert.Equal("hook-high", package.HookId);
+        Assert.DoesNotContain(_engine.GetCurrentQueue(), s => s.HookId == "hook-high");
+        Assert.Contains(_engine.GetCurrentQueue(), s => s.HookId == "hook-low");
+
+        var items = await _repo.GetOutboxPackageAsync(package.PackageId);
+        Assert.All(items, i => Assert.Equal(OutboxStatus.Exported, i.Status));
+        Assert.All(items, i => Assert.Equal("drive://exported", i.ExportRef));
+    }
+
+    [Fact]
+    public async Task BuildDaily_PackagesPerRunTwo_BuildsTwo_BestFirst()
+    {
+        _outboxSettings.PackagesPerRun = 2;
+
+        var packages = await Service().BuildDailyPackagesAsync();
+
         Assert.Equal(2, packages.Count);
         Assert.Equal("hook-high", packages[0].HookId);
         Assert.Equal("hook-low", packages[1].HookId);
-        Assert.Empty(_engine.GetCurrentQueue());
-
-        foreach (var package in packages)
-        {
-            var items = await _repo.GetOutboxPackageAsync(package.PackageId);
-            Assert.All(items, i => Assert.Equal(OutboxStatus.Exported, i.Status));
-            Assert.All(items, i => Assert.Equal("drive://exported", i.ExportRef));
-        }
     }
 
     [Fact]
-    public async Task BuildDaily_HonorsMaxPostsPerDayPerPlatform()
+    public async Task BuildDaily_OnePackageBuildFails_OthersStillBuild()
     {
-        _irisSettings.MaxPostsPerDayPerPlatform = 1;
+        _outboxSettings.PackagesPerRun = 2;
+        _builder.FailForHookId = "hook-high"; // the first (best) slot fails to build
 
         var packages = await Service().BuildDailyPackagesAsync();
 
-        // One package exhausts the cap on both platforms; the second slot stays queued.
+        // The failure is isolated: the second package is still produced.
         var package = Assert.Single(packages);
-        Assert.Equal("hook-high", package.HookId);
-        var remaining = Assert.Single(_engine.GetCurrentQueue());
-        Assert.Equal("hook-low", remaining.HookId);
-    }
-
-    [Fact]
-    public async Task BuildDaily_CapSurvivesRestart_SeededFromRepository()
-    {
-        _irisSettings.MaxPostsPerDayPerPlatform = 1;
-        // Simulate an earlier run today (before a container restart): items already in SQLite.
-        await _repo.SaveOutboxItemAsync(new OutboxItem
-        {
-            PackageId = "earlier", Platform = "instagram", MediaPath = "/x/instagram/media.png",
-            Status = OutboxStatus.Exported, ExportRef = "drive://earlier",
-        });
-        await _repo.SaveOutboxItemAsync(new OutboxItem
-        {
-            PackageId = "earlier", Platform = "tiktok", MediaPath = "/x/tiktok/media.png",
-            Status = OutboxStatus.Exported, ExportRef = "drive://earlier",
-        });
-
-        var packages = await Service().BuildDailyPackagesAsync();
-
-        Assert.Empty(packages);
-        // Curated slots stay queued instead of blowing past the cap.
-        Assert.Equal(2, _engine.GetCurrentQueue().Count);
+        Assert.Equal("hook-low", package.HookId);
+        // The failed slot stays queued for a later run.
+        Assert.Contains(_engine.GetCurrentQueue(), s => s.HookId == "hook-high");
     }
 
     [Fact]
@@ -174,9 +161,9 @@ public class OutboxServiceTests : IDisposable
         var failedPackages = await Service().BuildDailyPackagesAsync();
         var failedId = failedPackages[0].PackageId;
 
-        // Next daily run: Drive is back.
+        // Next daily run: Drive is back. RetryPendingExports runs first and re-exports
+        // the earlier failed package regardless of how many new packages this run builds.
         _exporter.Fail = false;
-        _irisSettings.MaxPostsPerDayPerPlatform = 100; // caps not under test here
         await Service().BuildDailyPackagesAsync();
 
         var items = await _repo.GetOutboxPackageAsync(failedId);
@@ -341,11 +328,15 @@ public class OutboxServiceTests : IDisposable
     {
         private readonly FakeRepository _repo;
         private readonly string _root;
+        public string? FailForHookId;
         public FakeBuilder(FakeRepository repo, string root) { _repo = repo; _root = root; }
 
         public async Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null,
             PackageMediaOverride? media = null, CancellationToken ct = default)
         {
+            if (FailForHookId != null && slot.HookId == FailForHookId)
+                throw new InvalidOperationException($"builder failed for {slot.HookId}");
+
             var packageDir = Path.Combine(_root, slot.SlotId);
             var items = new List<OutboxItem>();
             foreach (var platform in platforms ?? new[] { "instagram", "tiktok" })
@@ -357,7 +348,7 @@ public class OutboxServiceTests : IDisposable
                 {
                     PackageId = slot.SlotId, Platform = platform, HookId = slot.HookId,
                     Pillar = slot.Pillar, Caption = slot.Caption,
-                    MediaPath = mediaPath,
+                    MediaPath = mediaPath, PackageDir = packageDir,
                     Width = 1080, Height = 1350,
                 };
                 await _repo.SaveOutboxItemAsync(item);

@@ -91,17 +91,6 @@ public sealed class FakeRepository : IRepository
                 .Take(limit)
                 .ToList());
 
-    public Task<IReadOnlyDictionary<string, int>> CountOutboxItemsForDayAsync(DateTimeOffset dayUtc)
-    {
-        var start = dayUtc.UtcDateTime.Date;
-        var end = start.AddDays(1);
-        IReadOnlyDictionary<string, int> counts = Outbox
-            .Where(o => o.CreatedAt.UtcDateTime >= start && o.CreatedAt.UtcDateTime < end)
-            .GroupBy(o => o.Platform, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
-        return Task.FromResult(counts);
-    }
-
     public Task<int> MarkOutboxExportedAsync(string packageId, string exportRef)
     {
         var pending = Outbox.Where(o => o.PackageId == packageId && o.Status == OutboxStatus.Pending).ToList();

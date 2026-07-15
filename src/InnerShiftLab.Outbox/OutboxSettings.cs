@@ -22,6 +22,13 @@ public sealed class OutboxSettings
         : Platforms.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
     /// <summary>
+    /// How many packages a single daily run produces (one package = one hook across
+    /// all its platform variants). Defaults to 1 — the explicit, documented
+    /// replacement for the former accidental one-package-per-day behaviour.
+    /// </summary>
+    public int PackagesPerRun { get; set; } = 1;
+
+    /// <summary>
     /// Render an mp4 for video-first platforms (TikTok/YouTube) when ffmpeg is
     /// available. Falls back to the still image if rendering fails.
     /// </summary>

@@ -12,6 +12,8 @@ public sealed class IrisSettings
     public string LinktreeUrl { get; set; } = "https://linktr.ee/dennis.p.santillan87";
     public string SkoolUrl { get; set; } = "https://www.skool.com/the-nervous-system-dojo-5604/about?ref=d2870f8972d8430690851c4b5d16730c";
     public string[] PostingTimesUtc { get; set; } = new[] { "09:00", "14:00", "19:00" };
+    // QUARANTINED: only consulted by the retired auto-publish path (DailyPostJob).
+    // The outbox schedule is driven by OutboxSettings.PackagesPerRun instead.
     public int MaxPostsPerDayPerPlatform { get; set; } = 2;
     public string HeartbeatSecret { get; set; } = "change-me-in-env";
 }
