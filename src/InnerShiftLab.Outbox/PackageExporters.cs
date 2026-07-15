@@ -75,20 +75,23 @@ public sealed class GoogleDrivePackageExporter : IPackageExporter
 
         var packageFolderId = await CreateFolderAsync(client,
             $"{package.CreatedAt:yyyy-MM-dd} {package.HookId}", drive.FolderId, ct);
-
-        foreach (var file in Directory.EnumerateFiles(package.PackageDir))
-            await UploadFileAsync(client, file, packageFolderId, ct);
-
-        foreach (var dir in Directory.EnumerateDirectories(package.PackageDir))
-        {
-            var subFolderId = await CreateFolderAsync(client, Path.GetFileName(dir), packageFolderId, ct);
-            foreach (var file in Directory.EnumerateFiles(dir))
-                await UploadFileAsync(client, file, subFolderId, ct);
-        }
+        await UploadDirectoryAsync(client, package.PackageDir, packageFolderId, ct);
 
         var url = $"https://drive.google.com/drive/folders/{packageFolderId}";
         _log.LogInformation("Outbox package {PackageId} exported to Google Drive: {Url}", package.PackageId, url);
         return url;
+    }
+
+    /// <summary>Mirrors a local directory tree (any depth) into a Drive folder.</summary>
+    private async Task UploadDirectoryAsync(HttpClient client, string dir, string parentId, CancellationToken ct)
+    {
+        foreach (var file in Directory.EnumerateFiles(dir))
+            await UploadFileAsync(client, file, parentId, ct);
+        foreach (var sub in Directory.EnumerateDirectories(dir))
+        {
+            var subFolderId = await CreateFolderAsync(client, Path.GetFileName(sub), parentId, ct);
+            await UploadDirectoryAsync(client, sub, subFolderId, ct);
+        }
     }
 
     private static async Task<string> CreateFolderAsync(HttpClient client, string name, string parentId, CancellationToken ct)

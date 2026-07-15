@@ -11,6 +11,7 @@
 //    automatically at the start of every daily run, or on demand via
 //    POST /api/outbox/{packageId}/export.
 // =============================================================================
+using InnerShiftLab.ContentCreator;
 using InnerShiftLab.Core;
 using InnerShiftLab.Engine;
 
@@ -24,6 +25,14 @@ public interface IOutboxService
     /// reached. Empty when no hooks exist or every platform is already at cap.
     /// </summary>
     Task<IReadOnlyList<OutboxPackage>> BuildDailyPackagesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Runs the AI content pipeline (script -> carousel -> voiceover -> composed
+    /// video) and packages its output into the outbox: the composed video for
+    /// video platforms, the lead carousel image for image platforms, the AI
+    /// caption with a UTM-tracked link appended.
+    /// </summary>
+    Task<OutboxPackage> BuildCreatorPackageAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default);
 
     /// <summary>
     /// Re-exports a package whose export previously failed. Returns the export
@@ -45,15 +54,17 @@ public sealed class OutboxService : IOutboxService
     private readonly IOutboxPackageBuilder _builder;
     private readonly IPackageExporter _exporter;
     private readonly IRepository _repo;
+    private readonly IContentCreationPipeline _creator;
     private readonly IrisSettings _irisSettings;
     private readonly OutboxSettings _settings;
     private readonly ILogger<OutboxService> _log;
 
     public OutboxService(IIrisEngine engine, IOutboxPackageBuilder builder, IPackageExporter exporter,
-        IRepository repo, IrisSettings irisSettings, OutboxSettings settings, ILogger<OutboxService> log)
+        IRepository repo, IContentCreationPipeline creator, IrisSettings irisSettings, OutboxSettings settings,
+        ILogger<OutboxService> log)
     {
         _engine = engine; _builder = builder; _exporter = exporter; _repo = repo;
-        _irisSettings = irisSettings; _settings = settings; _log = log;
+        _creator = creator; _irisSettings = irisSettings; _settings = settings; _log = log;
     }
 
     public async Task<IReadOnlyList<OutboxPackage>> BuildDailyPackagesAsync(CancellationToken ct = default)
@@ -94,7 +105,7 @@ public sealed class OutboxService : IOutboxService
                 break;
             }
 
-            var package = await _builder.BuildAsync(slot, allowed, ct);
+            var package = await _builder.BuildAsync(slot, allowed, media: null, ct);
             await TryExportAsync(package, ct);
 
             // Track the slot in the posts table for continuity; it stays Queued until
@@ -108,6 +119,37 @@ public sealed class OutboxService : IOutboxService
             packages.Add(package);
         }
         return packages;
+    }
+
+    public async Task<OutboxPackage> BuildCreatorPackageAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default)
+    {
+        var content = await _creator.CreateAsync(keywords, slideCount, ct);
+
+        // The AI caption has no tracking link of its own — append one so creator
+        // content stays attributable (PlatformFormatter stamps utm_source per variant).
+        var hookId = $"creator-{content.ScriptId}";
+        var utm = $"utm_source=auto&utm_medium=social&utm_campaign={Uri.EscapeDataString(hookId)}" +
+                  $"&utm_content={nameof(Pillar.Integrate)}&utm_term=iris";
+        var slot = new PostSlot
+        {
+            SlotId = content.ScriptId,
+            HookId = hookId,
+            HookText = content.Title,
+            Pillar = Pillar.Integrate,
+            Platforms = _settings.EffectivePlatforms,
+            Caption = $"{content.Caption}\n\n{_irisSettings.LinktreeUrl}?{utm}",
+            ScheduledAt = DateTimeOffset.UtcNow,
+        };
+
+        var package = await _builder.BuildAsync(slot, platforms: null,
+            new PackageMediaOverride(content.SlideImagePaths.FirstOrDefault(), content.VideoPath), ct);
+        await TryExportAsync(package, ct);
+
+        slot.Status = PostStatus.Queued;
+        slot.MediaUrl = content.VideoPath;
+        await _repo.SavePostAsync(slot);
+        _log.LogInformation("Creator content {ScriptId} packaged into the outbox", content.ScriptId);
+        return package;
     }
 
     public async Task<string?> RetryExportAsync(string packageId, CancellationToken ct = default)

@@ -12,7 +12,7 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 3. **Post each platform folder**, one by one:
    - Open `caption.txt`, copy all → open the platform app → create post → paste
    - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
-   - YouTube also gets `title.txt` as the video title
+   - YouTube uses `title.txt` as the video title and `description.txt` as the description
    - **Instagram**: the caption says `🔗 Link in bio →` — point your bio/Linktree
      button at the URL in `instagram/link.txt` (or paste it as the first comment)
      so IG joins keep their hook + platform attribution

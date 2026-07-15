@@ -190,8 +190,10 @@ All available as HTTP endpoints. Add them as Android home screen shortcuts for f
 | `GET /api/outbox` | Outbox items (`?status=exported` to see what's waiting) |
 | `GET /api/outbox/{packageId}` | One package's platform variants |
 | `POST /api/outbox/build` | Build + export today's packages now (honors `MaxPostsPerDayPerPlatform`) |
+| `POST /api/outbox/creator` | AI pipeline (script/carousel/voiceover/video) → outbox package |
 | `POST /api/outbox/{packageId}/export` | Retry a failed Drive export |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Confirm a manual post (body optional: `{"postUrl":"..."}`) |
+| `POST /api/outbox/{packageId}/{platform}/skip` | Mark a variant as deliberately not posted |
 | `GET /api/monetization/summary` | Revenue + join stats |
 | `GET /api/monetization/conversions` | Recent conversion events |
 

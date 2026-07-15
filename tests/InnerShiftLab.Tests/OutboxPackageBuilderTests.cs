@@ -62,15 +62,65 @@ public class OutboxPackageBuilderTests : IDisposable
 
         foreach (var item in package.Items)
         {
-            var captionFile = Path.Combine(package.PackageDir, item.Platform, "caption.txt");
-            Assert.True(File.Exists(captionFile));
-            // Link-in-bio platforms carry the tracking link in link.txt instead of the caption.
             var format = PlatformFormats.Get(item.Platform);
+            // Titled platforms (YouTube) get description.txt; the rest caption.txt.
+            var captionFile = Path.Combine(package.PackageDir, item.Platform,
+                format.TitleMaxChars > 0 ? "description.txt" : "caption.txt");
+            Assert.True(File.Exists(captionFile), $"caption file missing for {item.Platform}");
+            // Link-in-bio platforms carry the tracking link in link.txt instead of the caption.
             var attributedFile = format.LinkInBio
                 ? Path.Combine(package.PackageDir, item.Platform, "link.txt")
                 : captionFile;
             Assert.Contains("utm_campaign=hook-01", await File.ReadAllTextAsync(attributedFile));
         }
+    }
+
+    [Fact]
+    public async Task Build_Youtube_GetsDescriptionAlongsideTitle_NotCaption()
+    {
+        var package = await Builder().BuildAsync(Slot());
+
+        var ytDir = Path.Combine(package.PackageDir, "youtube");
+        Assert.True(File.Exists(Path.Combine(ytDir, "description.txt")));
+        Assert.True(File.Exists(Path.Combine(ytDir, "title.txt")));
+        Assert.False(File.Exists(Path.Combine(ytDir, "caption.txt")));
+
+        var manifest = JObject.Parse(await File.ReadAllTextAsync(package.ManifestPath));
+        var youtube = ((JArray)manifest["items"]!).Single(i => i.Value<string>("platform") == "youtube");
+        Assert.Equal("youtube/description.txt", youtube.Value<string>("captionFile"));
+    }
+
+    [Fact]
+    public async Task Build_MediaOverride_CopiesProvidedMediaInsteadOfRendering()
+    {
+        var image = Path.Combine(_outputRoot, "slide1.png");
+        var video = Path.Combine(_outputRoot, "composed.mp4");
+        await File.WriteAllTextAsync(image, "ai-carousel-image");
+        await File.WriteAllTextAsync(video, "ai-composed-video");
+
+        var package = await Builder().BuildAsync(Slot(), platforms: null,
+            new PackageMediaOverride(image, video));
+
+        var ig = Assert.Single(package.Items, i => i.Platform == "instagram");
+        Assert.EndsWith(".png", ig.MediaPath);
+        Assert.Equal("ai-carousel-image", await File.ReadAllTextAsync(ig.MediaPath));
+
+        var tiktok = Assert.Single(package.Items, i => i.Platform == "tiktok");
+        Assert.EndsWith(".mp4", tiktok.MediaPath);
+        Assert.Equal("ai-composed-video", await File.ReadAllTextAsync(tiktok.MediaPath));
+
+        Assert.Equal(0, _renderer.ImageCalls); // nothing was rendered
+    }
+
+    [Fact]
+    public async Task Build_MediaOverride_MissingFiles_FallsBackToRendering()
+    {
+        var package = await Builder().BuildAsync(Slot(), platforms: new[] { "instagram" },
+            new PackageMediaOverride("/nope/img.png", "/nope/vid.mp4"));
+
+        var ig = Assert.Single(package.Items);
+        Assert.True(File.Exists(ig.MediaPath));
+        Assert.Equal(1, _renderer.ImageCalls);
     }
 
     [Fact]
@@ -182,10 +232,12 @@ public class OutboxPackageBuilderTests : IDisposable
     {
         public bool FailVideo;
         public int VideoCalls;
+        public int ImageCalls;
 
         public Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default",
             int width = 1080, int height = 1080)
         {
+            ImageCalls++;
             outPath ??= Path.GetTempFileName();
             Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
             File.WriteAllText(outPath, $"img {width}x{height}");

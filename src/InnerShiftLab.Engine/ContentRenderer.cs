@@ -50,16 +50,21 @@ public sealed class ContentRenderer : IContentRenderer
         // Wrap relative to the canvas width so wider/narrower formats fill their line length.
         var lines = WrapText(text, Math.Max(12, 28 * width / 1080));
         var y = height / 5;
+        // Tall (9:16) canvases are for TikTok/Shorts, whose UI overlays cover roughly
+        // the bottom quarter (and the right edge): keep every glyph above that zone.
+        var maxTextBottom = height >= 1600 ? (int)(height * 0.72) : height - 140;
         // Resolve a font family: prefer an installed system font, otherwise load one from disk.
         var family = ResolveFontFamily();
         var font = family.CreateFont(48, SixLabors.Fonts.FontStyle.Bold);
         var smallFont = family.CreateFont(28, SixLabors.Fonts.FontStyle.Regular);
         foreach (var line in lines)
         {
+            if (y + 60 > maxTextBottom) break;
             img.Mutate(c => c.DrawText(line, font, fg, new PointF(60, y)));
             y += 80;
         }
-        img.Mutate(c => c.DrawText("The Inner Shift Lab · IRIS Method", smallFont, fg, new PointF(60, height - 100)));
+        img.Mutate(c => c.DrawText("The Inner Shift Lab · IRIS Method", smallFont, fg,
+            new PointF(60, Math.Min(height - 100, maxTextBottom + 20))));
 
         await img.SaveAsPngAsync(outPath);
         _log.LogInformation("Rendered image: {Path}", outPath);

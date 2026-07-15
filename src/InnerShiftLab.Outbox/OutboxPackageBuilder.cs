@@ -21,14 +21,22 @@ public sealed record OutboxPackage(
     string ManifestPath,
     IReadOnlyList<OutboxItem> Items);
 
+/// <summary>
+/// Pre-produced media to package instead of rendering text cards — used to route
+/// the AI content pipeline's output (carousel image + composed video) to the outbox.
+/// </summary>
+public sealed record PackageMediaOverride(string? ImagePath, string? VideoPath);
+
 public interface IOutboxPackageBuilder
 {
     /// <summary>
     /// Builds the package for one slot. <paramref name="platforms"/> restricts the
     /// variants (used to honor the daily per-platform cap); null means all
-    /// configured platforms.
+    /// configured platforms. <paramref name="media"/> supplies pre-produced media;
+    /// null renders text cards.
     /// </summary>
-    Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null, CancellationToken ct = default);
+    Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null,
+        PackageMediaOverride? media = null, CancellationToken ct = default);
 }
 
 public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
@@ -45,7 +53,8 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
         _renderer = renderer; _repo = repo; _settings = settings; _outputRoot = outputRoot; _log = log;
     }
 
-    public async Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null, CancellationToken ct = default)
+    public async Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null,
+        PackageMediaOverride? media = null, CancellationToken ct = default)
     {
         var createdAt = DateTimeOffset.UtcNow;
         var packageDir = Path.Combine(_outputRoot, "outbox", createdAt.ToString("yyyy-MM-dd"), slot.SlotId);
@@ -64,25 +73,11 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
             var platformDir = Path.Combine(packageDir, format.Platform);
             Directory.CreateDirectory(platformDir);
 
-            var mediaPath = await _renderer.RenderImageAsync(
-                visualText, Path.Combine(platformDir, "media.png"),
-                width: format.Width, height: format.Height);
+            var mediaPath = await ProvideMediaAsync(format, platformDir, visualText, media);
 
-            if (format.PrefersVideo && _settings.RenderVideo)
-            {
-                try
-                {
-                    mediaPath = await _renderer.RenderVideoAsync(
-                        visualText, mediaPath, Path.Combine(platformDir, "media.mp4"));
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex,
-                        "Video render failed for {Platform}; package ships the still image instead", platform);
-                }
-            }
-
-            await File.WriteAllTextAsync(Path.Combine(platformDir, "caption.txt"), variant.Caption, ct);
+            // Platforms with a separate title field get the caption as a description.
+            var captionFileName = format.TitleMaxChars > 0 ? "description.txt" : "caption.txt";
+            await File.WriteAllTextAsync(Path.Combine(platformDir, captionFileName), variant.Caption, ct);
             if (variant.Title.Length > 0)
                 await File.WriteAllTextAsync(Path.Combine(platformDir, "title.txt"), variant.Title, ct);
             // Non-clickable-caption platforms: the caption carries a bio CTA, so ship
@@ -122,7 +117,9 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
                 platform = i.Platform,
                 dimensions = $"{i.Width}x{i.Height}",
                 media = Path.GetRelativePath(packageDir, i.MediaPath).Replace('\\', '/'),
-                captionFile = $"{i.Platform}/caption.txt",
+                captionFile = PlatformFormats.Get(i.Platform).TitleMaxChars > 0
+                    ? $"{i.Platform}/description.txt"
+                    : $"{i.Platform}/caption.txt",
                 titleFile = i.Title.Length > 0 ? $"{i.Platform}/title.txt" : null,
                 linkFile = File.Exists(Path.Combine(packageDir, i.Platform, "link.txt")) ? $"{i.Platform}/link.txt" : null,
                 confirmEndpoint = $"/api/outbox/{slot.SlotId}/{i.Platform}/confirm",
@@ -135,5 +132,48 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
 
         return new OutboxPackage(slot.SlotId, slot.HookId, slot.HookText, slot.Pillar,
             createdAt, packageDir, manifestPath, items);
+    }
+
+    /// <summary>
+    /// Copies pre-produced media into the platform folder when supplied (video-first
+    /// platforms prefer the video, image platforms the image), otherwise renders a
+    /// text card — and, for video platforms, wraps it into an mp4 when possible.
+    /// </summary>
+    private async Task<string> ProvideMediaAsync(PlatformFormat format, string platformDir,
+        string visualText, PackageMediaOverride? media)
+    {
+        if (media != null)
+        {
+            var source = format.PrefersVideo
+                ? (media.VideoPath ?? media.ImagePath)
+                : (media.ImagePath ?? media.VideoPath);
+            if (!string.IsNullOrEmpty(source) && File.Exists(source))
+            {
+                var dest = Path.Combine(platformDir, "media" + Path.GetExtension(source));
+                File.Copy(source, dest, overwrite: true);
+                return dest;
+            }
+            _log.LogWarning("Pre-produced media missing for {Platform} ({Source}); rendering a text card instead",
+                format.Platform, source);
+        }
+
+        var mediaPath = await _renderer.RenderImageAsync(
+            visualText, Path.Combine(platformDir, "media.png"),
+            width: format.Width, height: format.Height);
+
+        if (format.PrefersVideo && _settings.RenderVideo)
+        {
+            try
+            {
+                mediaPath = await _renderer.RenderVideoAsync(
+                    visualText, mediaPath, Path.Combine(platformDir, "media.mp4"));
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Video render failed for {Platform}; package ships the still image instead", format.Platform);
+            }
+        }
+        return mediaPath;
     }
 }

@@ -1,3 +1,4 @@
+using InnerShiftLab.ContentCreator;
 using InnerShiftLab.Core;
 using InnerShiftLab.Engine;
 using InnerShiftLab.Outbox;
@@ -28,7 +29,7 @@ public class OutboxServiceTests : IDisposable
     }
 
     private OutboxService Service()
-        => new(_engine, _builder, _exporter, _repo, _irisSettings, _outboxSettings,
+        => new(_engine, _builder, _exporter, _repo, new FakeCreator(), _irisSettings, _outboxSettings,
             NullLogger<OutboxService>.Instance);
 
     [Fact]
@@ -184,6 +185,29 @@ public class OutboxServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BuildCreatorPackage_RoutesAiContentToOutboxWithTracking()
+    {
+        var package = await Service().BuildCreatorPackageAsync("somatic healing");
+
+        Assert.Equal("script1", package.PackageId);
+        Assert.Equal("creator-script1", package.HookId);
+        Assert.Equal("AI generated title", package.HookText);
+
+        // The AI caption gained a UTM-tracked link so creator posts stay attributable.
+        var items = await _repo.GetOutboxPackageAsync("script1");
+        Assert.All(items, i =>
+        {
+            Assert.Contains("AI caption body", i.Caption);
+            Assert.Contains("utm_campaign=creator-script1", i.Caption);
+        });
+        Assert.All(items, i => Assert.Equal(OutboxStatus.Exported, i.Status));
+
+        var post = Assert.Single(_repo.Posts, p => p.SlotId == "script1");
+        Assert.Equal(PostStatus.Queued, post.Status);
+        Assert.Equal("/media/composed.mp4", post.MediaUrl);
+    }
+
+    [Fact]
     public async Task Confirm_UnknownVariant_ReturnsFalse()
     {
         Assert.False(await Service().ConfirmPostedAsync("nope", "instagram", null));
@@ -319,7 +343,8 @@ public class OutboxServiceTests : IDisposable
         private readonly string _root;
         public FakeBuilder(FakeRepository repo, string root) { _repo = repo; _root = root; }
 
-        public async Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null, CancellationToken ct = default)
+        public async Task<OutboxPackage> BuildAsync(PostSlot slot, IReadOnlyCollection<string>? platforms = null,
+            PackageMediaOverride? media = null, CancellationToken ct = default)
         {
             var packageDir = Path.Combine(_root, slot.SlotId);
             var items = new List<OutboxItem>();
@@ -341,6 +366,22 @@ public class OutboxServiceTests : IDisposable
             return new OutboxPackage(slot.SlotId, slot.HookId, slot.HookText, slot.Pillar,
                 DateTimeOffset.UtcNow, packageDir, Path.Combine(packageDir, "manifest.json"), items);
         }
+    }
+
+    private sealed class FakeCreator : IContentCreationPipeline
+    {
+        public Task<ComposedContent> CreateAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default)
+            => Task.FromResult(new ComposedContent
+            {
+                ScriptId = "script1",
+                Title = "AI generated title",
+                Caption = "AI caption body #AIContent",
+                SlideImagePaths = new[] { "/media/slide1.png" },
+                VideoPath = "/media/composed.mp4",
+            });
+
+        public Task<IReadOnlyList<PostSlot>> CreateAndPublishAsync(string? keywords, string[] platforms, CancellationToken ct = default)
+            => throw new NotSupportedException();
     }
 
     private sealed class FakeExporter : IPackageExporter

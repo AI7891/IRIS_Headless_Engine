@@ -323,6 +323,10 @@ try
             : Results.Ok(packages);
     });
 
+    // AI content pipeline -> outbox: script + carousel + voiceover packaged for manual posting.
+    app.MapPost("/api/outbox/creator", async (CreatorRequest? req, IOutboxService o, CancellationToken ct) =>
+        Results.Ok(await o.BuildCreatorPackageAsync(req?.Keywords, req?.SlideCount, ct)));
+
     app.MapPost("/api/outbox/{packageId}/export", async (string packageId, IOutboxService o, CancellationToken ct) =>
     {
         try

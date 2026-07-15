@@ -77,10 +77,20 @@ output/outbox/2026-07-15/<packageId>/
 ├── instagram/  caption.txt · link.txt (bio link) · media.png
 ├── facebook/   caption.txt · media.png
 ├── tiktok/     caption.txt · media.mp4 (media.png fallback)
-└── youtube/    caption.txt · title.txt · media.mp4 (media.png fallback)
+└── youtube/    title.txt · description.txt · media.mp4 (media.png fallback)
 ```
 
 The same tree is mirrored to the Drive folder, one subfolder per platform.
+
+## AI creator content in the outbox
+
+`POST /api/outbox/creator` runs the full content pipeline (Claude script →
+Pexels image carousel → ElevenLabs voiceover → ffmpeg-composed video) and
+packages the result exactly like a daily package: video platforms get the
+composed mp4, image platforms get the lead carousel slide, and the AI caption
+gains a UTM-tracked link (`utm_campaign=creator-<scriptId>`) so creator posts
+show up in monetization reporting alongside hook posts. Requires the
+Anthropic/Pexels/ElevenLabs keys from `ContentCreator` settings.
 
 ## Google Drive setup (service account — no user OAuth)
 
@@ -122,6 +132,7 @@ or force it immediately with `POST /api/outbox/{packageId}/export`.
 | `GET /api/outbox?status=exported&limit=50` | List outbox items (status filter optional: pending/exported/posted/skipped) |
 | `GET /api/outbox/{packageId}` | All platform variants of one package |
 | `POST /api/outbox/build` | Retry pending exports, then build + export today's packages (array) up to the daily cap |
+| `POST /api/outbox/creator` | Run the AI pipeline (Claude script → Pexels carousel → ElevenLabs voiceover → composed video) and package its output — body optional: `{"keywords":"...","slideCount":5}` |
 | `POST /api/outbox/{packageId}/export` | Re-export one package whose export failed (idempotent; 409 if its files are gone) |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Mark a variant as manually posted (optional body: `{"postUrl":"..."}`) |
 | `POST /api/outbox/{packageId}/{platform}/skip` | Mark a variant as deliberately not posted |
