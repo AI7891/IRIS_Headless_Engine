@@ -68,6 +68,45 @@ public sealed class DailyOutboxJob : IJob
     }
 }
 
+[DisallowConcurrentExecution]
+public sealed class ExportRetryJob : IJob
+{
+    private readonly IOutboxService _outbox;
+    private readonly IRepository _repo;
+    private readonly ILogger<ExportRetryJob> _log;
+
+    public ExportRetryJob(IOutboxService outbox, IRepository repo, ILogger<ExportRetryJob> log)
+    {
+        _outbox = outbox; _repo = repo; _log = log;
+    }
+
+    public async Task Execute(IJobExecutionContext context)
+    {
+        try
+        {
+            var pending = await _repo.GetUnexportedPackageIdsAsync();
+            foreach (var packageId in pending)
+            {
+                try
+                {
+                    var exportRef = await _outbox.ExportPackageAsync(packageId, context.CancellationToken);
+                    if (exportRef != null)
+                        _log.LogInformation("ExportRetry: package {PackageId} exported to {Ref}", packageId, exportRef);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // One stuck package must not abort the sweep.
+                    _log.LogError(ex, "ExportRetry: package {PackageId} still failing", packageId);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "ExportRetry job crashed");
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 //  QUARANTINED: DailyPostJob and TokenRefreshJob belong to the retired
 //  auto-publish pipeline. They are only scheduled when Features:AutoPublish is

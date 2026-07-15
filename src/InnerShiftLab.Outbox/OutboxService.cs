@@ -35,11 +35,11 @@ public interface IOutboxService
     Task<OutboxPackage> BuildCreatorPackageAsync(string? keywords = null, int? slideCount = null, CancellationToken ct = default);
 
     /// <summary>
-    /// Re-exports a package whose export previously failed. Returns the export
-    /// reference, or null when the package doesn't exist. Idempotent: an already
-    /// exported package returns its existing reference.
+    /// Exports (or re-exports) a package from its persisted rows — no re-rendering.
+    /// Returns the export reference, or null when the package doesn't exist.
+    /// Idempotent: an already exported package returns its existing reference.
     /// </summary>
-    Task<string?> RetryExportAsync(string packageId, CancellationToken ct = default);
+    Task<string?> ExportPackageAsync(string packageId, CancellationToken ct = default);
 
     /// <summary>Operator confirmation that one platform variant was posted manually. False when the variant doesn't exist or was skipped.</summary>
     Task<bool> ConfirmPostedAsync(string packageId, string platform, string? postUrl, CancellationToken ct = default);
@@ -152,7 +152,7 @@ public sealed class OutboxService : IOutboxService
         return package;
     }
 
-    public async Task<string?> RetryExportAsync(string packageId, CancellationToken ct = default)
+    public async Task<string?> ExportPackageAsync(string packageId, CancellationToken ct = default)
     {
         var items = await _repo.GetOutboxPackageAsync(packageId);
         if (items.Count == 0) return null;
@@ -161,10 +161,12 @@ public sealed class OutboxService : IOutboxService
         if (items.All(i => i.Status != OutboxStatus.Pending) && existingRef != null)
             return existingRef; // already exported — nothing to retry
 
-        // Reconstruct the package location from the persisted items:
-        // media lives at <packageDir>/<platform>/media.*
+        // The package directory is persisted with every item; fall back to deriving
+        // it from the media path for rows written before the package_dir column.
         var first = items[0];
-        var packageDir = Path.GetDirectoryName(Path.GetDirectoryName(first.MediaPath));
+        var packageDir = !string.IsNullOrEmpty(first.PackageDir)
+            ? first.PackageDir
+            : Path.GetDirectoryName(Path.GetDirectoryName(first.MediaPath));
         if (packageDir == null || !Directory.Exists(packageDir))
             throw new InvalidOperationException(
                 $"Package files for '{packageId}' no longer exist on disk ({packageDir}). " +
@@ -244,12 +246,11 @@ public sealed class OutboxService : IOutboxService
     /// <summary>Re-exports every package that still has Pending items (i.e. a previous export failed).</summary>
     private async Task RetryPendingExportsAsync(CancellationToken ct)
     {
-        var pending = await _repo.GetOutboxItemsAsync(OutboxStatus.Pending, limit: 500);
-        foreach (var packageId in pending.Select(i => i.PackageId).Distinct())
+        foreach (var packageId in await _repo.GetUnexportedPackageIdsAsync())
         {
             try
             {
-                await RetryExportAsync(packageId, ct);
+                await ExportPackageAsync(packageId, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -269,8 +270,8 @@ public sealed class OutboxService : IOutboxService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.LogError(ex,
-                "Outbox export failed for {PackageId}; package remains local at {Dir}. It will be retried " +
-                "automatically on the next daily run, or on demand via POST /api/outbox/{PackageId}/export",
+                "Outbox export failed for {PackageId}; package remains local at {Dir}. The 15-minute " +
+                "export-retry sweep will re-export it, or force it via POST /api/outbox/{PackageId}/export",
                 package.PackageId, package.PackageDir, package.PackageId);
         }
     }

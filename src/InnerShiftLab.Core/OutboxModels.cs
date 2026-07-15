@@ -38,6 +38,8 @@ public sealed class OutboxItem
     public string Title { get; set; } = "";
     /// <summary>Local path of the rendered media file (image or video).</summary>
     public string MediaPath { get; set; } = "";
+    /// <summary>Root directory of the package on disk — persisted so a failed export can be retried without re-rendering.</summary>
+    public string PackageDir { get; set; } = "";
     public int Width { get; set; }
     public int Height { get; set; }
     public OutboxStatus Status { get; set; } = OutboxStatus.Pending;

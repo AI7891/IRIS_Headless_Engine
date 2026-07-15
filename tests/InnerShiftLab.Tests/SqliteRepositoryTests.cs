@@ -101,9 +101,33 @@ public class SqliteRepositoryTests : IAsyncLifetime
         Caption = "caption with utm link",
         Title = platform == "youtube" ? "A title" : "",
         MediaPath = $"/output/{packageId}/{platform}.png",
+        PackageDir = $"/output/{packageId}",
         Width = 1080,
         Height = 1350,
     };
+
+    [Fact]
+    public async Task OutboxItem_PackageDir_RoundTrips()
+    {
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg1", "instagram"));
+        Assert.Equal("/output/pkg1", Assert.Single(await _repo.GetOutboxPackageAsync("pkg1")).PackageDir);
+    }
+
+    [Fact]
+    public async Task GetUnexportedPackageIds_ReturnsDistinctPendingOldestFirst()
+    {
+        var older = NewOutboxItem("pkg-old", "instagram");
+        older.CreatedAt = DateTimeOffset.UtcNow.AddHours(-2);
+        await _repo.SaveOutboxItemAsync(older);
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg-new", "instagram"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg-new", "tiktok"));
+        await _repo.SaveOutboxItemAsync(NewOutboxItem("pkg-done", "instagram"));
+        await _repo.MarkOutboxExportedAsync("pkg-done", "drive://done");
+
+        var ids = await _repo.GetUnexportedPackageIdsAsync();
+
+        Assert.Equal(new[] { "pkg-old", "pkg-new" }, ids);
+    }
 
     [Fact]
     public async Task SaveOutboxItem_ThenGetPackage_RoundTrips()

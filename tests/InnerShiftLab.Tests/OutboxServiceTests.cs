@@ -129,7 +129,7 @@ public class OutboxServiceTests : IDisposable
         var id = packages[0].PackageId;
 
         _exporter.Fail = false;
-        var exportRef = await Service().RetryExportAsync(id);
+        var exportRef = await Service().ExportPackageAsync(id);
 
         Assert.Equal("drive://exported", exportRef);
         var items = await _repo.GetOutboxPackageAsync(id);
@@ -142,7 +142,7 @@ public class OutboxServiceTests : IDisposable
         var packages = await Service().BuildDailyPackagesAsync();
         var callsAfterBuild = _exporter.Calls;
 
-        var exportRef = await Service().RetryExportAsync(packages[0].PackageId);
+        var exportRef = await Service().ExportPackageAsync(packages[0].PackageId);
 
         Assert.Equal("drive://exported", exportRef);
         Assert.Equal(callsAfterBuild, _exporter.Calls); // no extra export happened
@@ -157,14 +157,14 @@ public class OutboxServiceTests : IDisposable
 
         _exporter.Fail = false;
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Service().RetryExportAsync(packages[0].PackageId));
+            () => Service().ExportPackageAsync(packages[0].PackageId));
         Assert.Contains("/api/outbox/build", ex.Message);
     }
 
     [Fact]
     public async Task RetryExport_UnknownPackage_ReturnsNull()
     {
-        Assert.Null(await Service().RetryExportAsync("nope"));
+        Assert.Null(await Service().ExportPackageAsync("nope"));
     }
 
     [Fact]

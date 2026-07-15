@@ -224,6 +224,14 @@ try
             .WithIdentity("daily-outbox-trigger")
             .WithCronSchedule("0 0 9 * * ?", b => b.InTimeZone(TimeZoneInfo.Utc)));
 
+        // Export retry: every 15 min — re-export packages whose Drive upload failed
+        var exportRetry = JobKey.Create("export-retry");
+        q.AddJob<ExportRetryJob>(h => h.WithIdentity(exportRetry).StoreDurably());
+        q.AddTrigger(t => t
+            .ForJob(exportRetry)
+            .WithIdentity("export-retry-trigger")
+            .WithSimpleSchedule(s => s.WithIntervalInMinutes(15).RepeatForever()));
+
         // Webhook sweep: every 5 min — reconcile missed Skool join events
         var webhookSweep = JobKey.Create("webhook-sweep");
         q.AddJob<WebhookSweepJob>(h => h.WithIdentity(webhookSweep).StoreDurably());
@@ -331,7 +339,7 @@ try
     {
         try
         {
-            var exportRef = await o.RetryExportAsync(packageId, ct);
+            var exportRef = await o.ExportPackageAsync(packageId, ct);
             return exportRef == null
                 ? Results.NotFound(new { message = $"No outbox package '{packageId}'" })
                 : Results.Ok(new { packageId, exportRef });

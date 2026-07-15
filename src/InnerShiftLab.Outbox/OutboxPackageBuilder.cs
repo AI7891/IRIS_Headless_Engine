@@ -94,6 +94,7 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
                 Caption = variant.Caption,
                 Title = variant.Title,
                 MediaPath = mediaPath,
+                PackageDir = packageDir,
                 Width = format.Width,
                 Height = format.Height,
                 Status = OutboxStatus.Pending,

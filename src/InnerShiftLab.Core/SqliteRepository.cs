@@ -34,6 +34,7 @@ public interface IRepository
     Task SaveOutboxItemAsync(OutboxItem item);
     Task<IReadOnlyList<OutboxItem>> GetOutboxItemsAsync(OutboxStatus? status = null, int limit = 100);
     Task<IReadOnlyList<OutboxItem>> GetOutboxPackageAsync(string packageId);
+    Task<IReadOnlyList<string>> GetUnexportedPackageIdsAsync(int limit = 20);
     Task<IReadOnlyDictionary<string, int>> CountOutboxItemsForDayAsync(DateTimeOffset dayUtc);
     Task<int> MarkOutboxExportedAsync(string packageId, string exportRef);
     Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl);
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     caption     TEXT,
     title       TEXT,
     media_path  TEXT,
+    package_dir TEXT NOT NULL DEFAULT '',
     width       INTEGER,
     height      INTEGER,
     status      TEXT,
@@ -117,7 +119,21 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 ";
         await cmd.ExecuteNonQueryAsync();
+
+        // Defensive migrations for databases created before a column existed.
+        await EnsureColumnAsync(conn, "outbox", "package_dir", "TEXT NOT NULL DEFAULT ''");
+
         _initialized = true;
+    }
+
+    private static async Task EnsureColumnAsync(SqliteConnection conn, string table, string column, string definition)
+    {
+        await using var check = conn.CreateCommand();
+        check.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{column}'";
+        if (Convert.ToInt32(await check.ExecuteScalarAsync()) > 0) return;
+        await using var alter = conn.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {definition}";
+        await alter.ExecuteNonQueryAsync();
     }
 
     public async Task<bool> PingAsync()
@@ -313,10 +329,10 @@ CREATE TABLE IF NOT EXISTS outbox (
         await using var cmd = conn.CreateCommand();
         // Terminal states never regress: rebuilding a package must not flip a
         // Posted/Skipped variant back to Pending or erase its confirmation.
-        cmd.CommandText = @"INSERT INTO outbox (package_id, platform, hook_id, pillar, caption, title, media_path, width, height, status, export_ref, created, posted_at, post_url)
-                            VALUES ($pk, $pl, $h, $pi, $c, $ti, $m, $w, $he, $st, $ex, $cr, $po, $pu)
+        cmd.CommandText = @"INSERT INTO outbox (package_id, platform, hook_id, pillar, caption, title, media_path, package_dir, width, height, status, export_ref, created, posted_at, post_url)
+                            VALUES ($pk, $pl, $h, $pi, $c, $ti, $m, $pd, $w, $he, $st, $ex, $cr, $po, $pu)
                             ON CONFLICT(package_id, platform) DO UPDATE SET
-                                caption=$c, title=$ti, media_path=$m, width=$w, height=$he,
+                                caption=$c, title=$ti, media_path=$m, package_dir=$pd, width=$w, height=$he,
                                 status = CASE WHEN outbox.status IN ('Posted','Skipped') THEN outbox.status ELSE $st END,
                                 export_ref=$ex,
                                 posted_at = COALESCE(outbox.posted_at, $po),
@@ -328,6 +344,7 @@ CREATE TABLE IF NOT EXISTS outbox (
         cmd.Parameters.AddWithValue("$c", item.Caption ?? "");
         cmd.Parameters.AddWithValue("$ti", item.Title ?? "");
         cmd.Parameters.AddWithValue("$m", item.MediaPath ?? "");
+        cmd.Parameters.AddWithValue("$pd", item.PackageDir ?? "");
         cmd.Parameters.AddWithValue("$w", item.Width);
         cmd.Parameters.AddWithValue("$he", item.Height);
         cmd.Parameters.AddWithValue("$st", item.Status.ToString());
@@ -362,6 +379,20 @@ CREATE TABLE IF NOT EXISTS outbox (
         cmd.CommandText = $"SELECT {OutboxColumns} FROM outbox WHERE package_id=$pk ORDER BY platform";
         cmd.Parameters.AddWithValue("$pk", packageId);
         return await ReadOutboxItemsAsync(cmd);
+    }
+
+    public async Task<IReadOnlyList<string>> GetUnexportedPackageIdsAsync(int limit = 20)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT DISTINCT package_id FROM outbox WHERE status=$st ORDER BY created LIMIT $l";
+        cmd.Parameters.AddWithValue("$st", OutboxStatus.Pending.ToString());
+        cmd.Parameters.AddWithValue("$l", limit);
+        var list = new List<string>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            list.Add(r.GetString(0));
+        return list;
     }
 
     public async Task<IReadOnlyDictionary<string, int>> CountOutboxItemsForDayAsync(DateTimeOffset dayUtc)
@@ -427,7 +458,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     }
 
     private const string OutboxColumns =
-        "package_id, platform, hook_id, pillar, caption, title, media_path, width, height, status, export_ref, created, posted_at, post_url";
+        "package_id, platform, hook_id, pillar, caption, title, media_path, package_dir, width, height, status, export_ref, created, posted_at, post_url";
 
     private static async Task<IReadOnlyList<OutboxItem>> ReadOutboxItemsAsync(SqliteCommand cmd)
     {
@@ -444,13 +475,14 @@ CREATE TABLE IF NOT EXISTS outbox (
                 Caption = r.IsDBNull(4) ? "" : r.GetString(4),
                 Title = r.IsDBNull(5) ? "" : r.GetString(5),
                 MediaPath = r.IsDBNull(6) ? "" : r.GetString(6),
-                Width = r.IsDBNull(7) ? 0 : r.GetInt32(7),
-                Height = r.IsDBNull(8) ? 0 : r.GetInt32(8),
-                Status = Enum.TryParse<OutboxStatus>(r.IsDBNull(9) ? "" : r.GetString(9), out var st) ? st : OutboxStatus.Pending,
-                ExportRef = r.IsDBNull(10) ? null : r.GetString(10),
-                CreatedAt = DateTimeOffset.TryParse(r.IsDBNull(11) ? null : r.GetString(11), out var cr) ? cr : DateTimeOffset.UtcNow,
-                PostedAt = DateTimeOffset.TryParse(r.IsDBNull(12) ? null : r.GetString(12), out var po) ? po : (DateTimeOffset?)null,
-                PostUrl = r.IsDBNull(13) ? null : r.GetString(13),
+                PackageDir = r.IsDBNull(7) ? "" : r.GetString(7),
+                Width = r.IsDBNull(8) ? 0 : r.GetInt32(8),
+                Height = r.IsDBNull(9) ? 0 : r.GetInt32(9),
+                Status = Enum.TryParse<OutboxStatus>(r.IsDBNull(10) ? "" : r.GetString(10), out var st) ? st : OutboxStatus.Pending,
+                ExportRef = r.IsDBNull(11) ? null : r.GetString(11),
+                CreatedAt = DateTimeOffset.TryParse(r.IsDBNull(12) ? null : r.GetString(12), out var cr) ? cr : DateTimeOffset.UtcNow,
+                PostedAt = DateTimeOffset.TryParse(r.IsDBNull(13) ? null : r.GetString(13), out var po) ? po : (DateTimeOffset?)null,
+                PostUrl = r.IsDBNull(14) ? null : r.GetString(14),
             });
         }
         return list;
