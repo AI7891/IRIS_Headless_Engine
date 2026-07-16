@@ -18,6 +18,7 @@ set -u
 export IRIS_URL="https://YOUR-CODESPACE-5000.app.github.dev"
 export INTERVAL="600"
 HEARTBEAT="$HOME/iris/termux-heartbeat.sh"
+NOTIFIER="$HOME/iris/termux-outbox-notify.sh"
 # -----------------------------------------------------------------------------
 
 termux-wake-lock 2>/dev/null || true
@@ -27,6 +28,16 @@ if [ ! -x "$HEARTBEAT" ]; then
   exit 1
 fi
 
-# Log to a file so you can check it later: tail -f ~/iris/heartbeat.log
+# Log to files so you can check them later:
+#   tail -f ~/iris/heartbeat.log   ·   tail -f ~/iris/notify.log
 mkdir -p "$HOME/iris"
+
+# Outbox notifier runs in the background (its own poll interval, default 300s).
+if [ -x "$NOTIFIER" ]; then
+  ( INTERVAL=300 "$NOTIFIER" >> "$HOME/iris/notify.log" 2>&1 & )
+else
+  echo "Outbox notifier not found/executable at $NOTIFIER (skipping)" >&2
+fi
+
+# Heartbeat stays in the foreground so boot behaviour is unchanged.
 exec "$HEARTBEAT" >> "$HOME/iris/heartbeat.log" 2>&1
