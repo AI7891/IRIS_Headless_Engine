@@ -62,27 +62,30 @@ public sealed class GitOutboxExporter : IPackageExporter
             var retained = SelectRetainedDirs(_outboxRoot, _settings.Git.RetentionDays, DateTimeOffset.UtcNow);
             if (retained.Count == 0)
             {
+                // Defensive only: the package just written always creates today's dated
+                // directory, so in normal operation there is always at least one retained
+                // dir. This guards the odd case where the tree was wiped mid-run.
                 _log.LogWarning("Git export: no retained package directories under {Root}; leaving package local at {Dir}",
                     _outboxRoot, package.PackageDir);
                 return package.PackageDir;
             }
 
             Directory.CreateDirectory(temp);
-            await RunGitAsync(new[] { "init", "-q" }, temp, ct);
-            await RunGitAsync(new[] { "checkout", "-q", "--orphan", branch }, temp, ct);
+            await RunGitAsync(new[] { "init", "-q" }, temp, ct, "init");
+            await RunGitAsync(new[] { "checkout", "-q", "--orphan", branch }, temp, ct, "checkout");
 
             foreach (var dir in retained)
                 CopyDirectory(dir, Path.Combine(temp, Path.GetFileName(dir)));
             await File.WriteAllTextAsync(Path.Combine(temp, "README.md"), BranchReadme(branch), ct);
 
-            await RunGitAsync(new[] { "add", "-A" }, temp, ct);
+            await RunGitAsync(new[] { "add", "-A" }, temp, ct, "add");
             var message = $"IRIS outbox {DateTimeOffset.UtcNow:yyyy-MM-dd} ({retained.Count} day(s))";
             await RunGitAsync(new[]
             {
                 "-c", "user.name=IRIS Engine",
                 "-c", "user.email=iris@innershiftlab.local",
                 "commit", "-q", "-m", message,
-            }, temp, ct);
+            }, temp, ct, "commit");
 
             // Push to a plain (credential-free) URL. When GITHUB_TOKEN is set, auth goes
             // through a git credential helper that reads the token from the inherited
@@ -100,7 +103,7 @@ public sealed class GitOutboxExporter : IPackageExporter
             }
             pushArgs.Add("push"); pushArgs.Add("--force"); pushArgs.Add("-q");
             pushArgs.Add(BuildRemoteUrl(owner, repo)); pushArgs.Add(branch);
-            await RunGitAsync(pushArgs.ToArray(), temp, ct);
+            await RunGitAsync(pushArgs.ToArray(), temp, ct, "push");
 
             var relative = Path.GetRelativePath(_outboxRoot, package.PackageDir);
             var url = BuildPickupUrl(owner, repo, branch, relative);
@@ -118,9 +121,10 @@ public sealed class GitOutboxExporter : IPackageExporter
     // -- testable helpers -----------------------------------------------------
 
     /// <summary>
-    /// Selects the package/date directories under <paramref name="outboxRoot"/> whose
-    /// leading yyyy-MM-dd name is within <paramref name="retentionDays"/> of today.
-    /// Directories without a parseable date prefix are ignored.
+    /// Selects the dated directories under <paramref name="outboxRoot"/> to publish:
+    /// those keeping <b>today plus the previous <paramref name="retentionDays"/> days</b>
+    /// (an inclusive cutoff, so 14 keeps 15 calendar days). Directories without a
+    /// parseable yyyy-MM-dd prefix, or dated in the future, are ignored.
     /// </summary>
     internal static List<string> SelectRetainedDirs(string outboxRoot, int retentionDays, DateTimeOffset nowUtc)
     {
@@ -208,7 +212,7 @@ public sealed class GitOutboxExporter : IPackageExporter
         if (string.IsNullOrWhiteSpace(_settings.Git.Repository) &&
             string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GITHUB_REPOSITORY")))
         {
-            try { originUrl = (await RunGitAsync(new[] { "remote", "get-url", "origin" }, _appRoot, ct)).Trim(); }
+            try { originUrl = (await RunGitAsync(new[] { "remote", "get-url", "origin" }, _appRoot, ct, "remote get-url")).Trim(); }
             catch (Exception ex) { _log.LogDebug("Git export: could not read origin remote: {Msg}", ex.Message); }
         }
         return ResolveOwnerRepo(_settings.Git.Repository,
@@ -223,7 +227,9 @@ public sealed class GitOutboxExporter : IPackageExporter
     internal static string BuildRemoteUrl(string owner, string repo)
         => $"https://github.com/{owner}/{repo}.git";
 
-    private async Task<string> RunGitAsync(string[] args, string workingDir, CancellationToken ct)
+    // label names the subcommand for error messages — passed explicitly because the
+    // leading "-c key=value" config pairs make any args[0]-based heuristic wrong.
+    private async Task<string> RunGitAsync(string[] args, string workingDir, CancellationToken ct, string label)
     {
         var psi = new ProcessStartInfo("git")
         {
@@ -255,7 +261,7 @@ public sealed class GitOutboxExporter : IPackageExporter
         var stderr = await stderrTask;
         if (proc.ExitCode != 0)
             throw new InvalidOperationException(
-                $"git {args[0]} failed (exit {proc.ExitCode}): {Redact(stderr).Trim()}");
+                $"git {label} failed (exit {proc.ExitCode}): {Redact(stderr).Trim()}");
         return stdout;
     }
 
