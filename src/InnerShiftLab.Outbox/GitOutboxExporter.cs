@@ -84,10 +84,23 @@ public sealed class GitOutboxExporter : IPackageExporter
                 "commit", "-q", "-m", message,
             }, temp, ct);
 
-            // Push to the remote URL directly so no token-bearing remote persists in
-            // .git/config beyond this (throwaway) temp dir.
-            var remoteUrl = BuildRemoteUrl(owner, repo);
-            await RunGitAsync(new[] { "push", "--force", "-q", remoteUrl, branch }, temp, ct);
+            // Push to a plain (credential-free) URL. When GITHUB_TOKEN is set, auth goes
+            // through a git credential helper that reads the token from the inherited
+            // environment — so the secret is NEVER placed in the process argument list
+            // (which is visible in `ps` to anything else on the box).
+            var pushArgs = new List<string>();
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GITHUB_TOKEN")))
+            {
+                // The empty helper resets any inherited helper chain so ours wins; the
+                // "!f() { ... }" helper is run by git via sh, which expands $GITHUB_TOKEN
+                // from the inherited env — the value is never interpolated on our side.
+                pushArgs.Add("-c"); pushArgs.Add("credential.helper=");
+                pushArgs.Add("-c"); pushArgs.Add(
+                    "credential.helper=!f() { echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f");
+            }
+            pushArgs.Add("push"); pushArgs.Add("--force"); pushArgs.Add("-q");
+            pushArgs.Add(BuildRemoteUrl(owner, repo)); pushArgs.Add(branch);
+            await RunGitAsync(pushArgs.ToArray(), temp, ct);
 
             var relative = Path.GetRelativePath(_outboxRoot, package.PackageDir);
             var url = BuildPickupUrl(owner, repo, branch, relative);
@@ -202,13 +215,13 @@ public sealed class GitOutboxExporter : IPackageExporter
             Environment.GetEnvironmentVariable("GITHUB_REPOSITORY"), originUrl);
     }
 
-    private static string BuildRemoteUrl(string owner, string repo)
-    {
-        var token = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-        return string.IsNullOrWhiteSpace(token)
-            ? $"https://github.com/{owner}/{repo}.git"
-            : $"https://x-access-token:{token}@github.com/{owner}/{repo}.git";
-    }
+    /// <summary>
+    /// The push URL — always plain, never credential-bearing. A token, when present, is
+    /// supplied out-of-band via a git credential helper (see the push call) so it never
+    /// lands in the process argument list.
+    /// </summary>
+    internal static string BuildRemoteUrl(string owner, string repo)
+        => $"https://github.com/{owner}/{repo}.git";
 
     private async Task<string> RunGitAsync(string[] args, string workingDir, CancellationToken ct)
     {

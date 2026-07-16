@@ -115,6 +115,24 @@ public class GitOutboxExporterTests : IDisposable
     }
 
     [Fact]
+    public void BuildRemoteUrl_NeverContainsToken_EvenWhenEnvSet()
+    {
+        var prior = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+        try
+        {
+            Environment.SetEnvironmentVariable("GITHUB_TOKEN", "SECRET123");
+            var url = GitOutboxExporter.BuildRemoteUrl("AI7891", "IRIS_Outbox");
+            Assert.Equal("https://github.com/AI7891/IRIS_Outbox.git", url);
+            Assert.DoesNotContain("x-access-token", url);
+            Assert.DoesNotContain("SECRET123", url);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GITHUB_TOKEN", prior);
+        }
+    }
+
+    [Fact]
     public void Redact_RemovesAccessTokenFromGitOutput()
     {
         var leaky = "fatal: unable to access 'https://x-access-token:SECRET123@github.com/o/r.git/': 403";
