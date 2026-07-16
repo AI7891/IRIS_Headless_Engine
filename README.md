@@ -70,10 +70,13 @@ Codespaces auto-forwards port 5000. Open the **Ports** tab → port 5000 → "Op
 ### 1.7 Phone pickup (default: git branch)
 Out of the box, each package is pushed to the `outbox` branch of this repo (ambient
 Codespaces credentials, zero cost) and you open it in the GitHub mobile app. Run
-`scripts/termux-outbox-notify.sh` so your phone pings when a package is ready. See
-[docs/headless-outbox.md](docs/headless-outbox.md) → *Delivery*. (Google Drive is
-available too, but only with a paid Workspace **Shared Drive** — a personal Google
-account fails with `403 storageQuotaExceeded`.)
+`scripts/termux-outbox-notify.sh` so your phone pings when a package is ready.
+**Recommended:** set `Outbox:Git:Repository` to a dedicated private repo (e.g.
+`you/IRIS_Outbox`) so the media never bloats clones of the code repo. Media is
+FIFO-pruned automatically (rows kept). See
+[docs/headless-outbox.md](docs/headless-outbox.md) → *Delivery* and *Retention*.
+(Google Drive is available too, but only with a paid Workspace **Shared Drive** — a
+personal Google account fails with `403 storageQuotaExceeded`.)
 
 ---
 

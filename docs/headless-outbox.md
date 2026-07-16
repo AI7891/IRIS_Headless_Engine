@@ -142,10 +142,41 @@ opens the pickup link in the **GitHub mobile app**.
 }
 ```
 
-Auth is the ambient credential helper; if `GITHUB_TOKEN` is set it is used only in a
-throwaway push URL and is redacted from every log/exception — it never lands in the
-pushed branch or a persisted `.git/config`. The export runs in a temp directory and
-never touches the app's own working tree.
+Auth is the ambient credential helper; if `GITHUB_TOKEN` is set it is supplied to
+`git push` via a credential helper that reads it from the inherited environment — so
+it is never placed in the process argument list (visible in `ps`), never interpolated
+into a URL, and is redacted from every log/exception. The export runs in a temp
+directory and never touches the app's own working tree.
+
+At startup the app resolves and logs the push target
+(`Outbox git target: owner/repo (branch 'outbox')`), so a healthy log confirms
+delivery is wired. If it can't resolve a target it logs an **error** but keeps
+serving — outbox export just fails until you fix `Outbox:Git:Repository`.
+
+#### Use a dedicated outbox repo (recommended)
+
+`git clone` fetches every branch, so leaving `Repository` empty puts two weeks of
+media on a branch of the **code** repo — and every future clone and Codespace rebuild
+then downloads it. Point the outbox at its own repo instead:
+
+1. Create a private repo, e.g. `you/IRIS_Outbox` (empty is fine).
+2. Set `Outbox:Git:Repository` to `you/IRIS_Outbox`.
+3. Grant the Codespace write access to it — the default `GITHUB_TOKEN` only reaches
+   the source repo. In `.devcontainer/devcontainer.json`:
+   ```json
+   "customizations": {
+     "codespaces": {
+       "repositories": {
+         "you/IRIS_Outbox": { "permissions": { "contents": "write" } }
+       }
+     }
+   }
+   ```
+4. **Rebuild the Codespace** (this block only applies on create) — GitHub prompts to
+   authorize the extra repo on the next create.
+
+Leaving `Repository` empty still works, but the startup log will **warn** about the
+clone bloat.
 
 ### Google Drive (Workspace Shared Drive only — NOT personal Google)
 
@@ -186,6 +217,28 @@ don't have to poll. It requires the **Termux:API** app and `pkg install termux-a
 
 Tunables: `IRIS_URL`, `INTERVAL`, `STATE_FILE` (default `~/.iris/seen-packages`).
 
+## Retention (FIFO)
+
+Media doesn't pile up forever. The `RetentionJob` runs daily at **09:30 UTC** (30 min
+after the build) and can be triggered on demand with `POST /api/outbox/prune-now`.
+
+- **Only media is pruned.** The rendered image/video/text files are deleted; the
+  SQLite `outbox` **rows are never touched** — they carry the caption, `exportRef` and
+  posted state that UTM/monetization attribution depends on. A pruned package's row
+  stays, flagged `mediaPruned: true` (visible in `GET /api/outbox`).
+- **Age pass** (`KeepDays`, default 30): media older than this is pruned even if never
+  posted — the abandoned-content cap.
+- **Size pass** (`MaxTotalMegabytes`, default 2048; `0` = off): when the local
+  `output/outbox/` tree exceeds the cap, the oldest eligible packages are pruned
+  **oldest-first until just under it**, then it stops.
+- **Safety** (`KeepUnpostedPackages`, default true): media for a package you haven't
+  acted on yet (any `Pending`/`Exported` item) is never pruned by the size pass — only
+  the age pass can remove it, and only once it passes `KeepDays`.
+- **Git delivery needs no separate cleanup**: the next export force-pushes a mirror of
+  what remains locally, so pruning local dirs removes them from the branch too. **Drive
+  folders are deleted explicitly** by the prune (404-tolerant; a Drive hiccup never
+  breaks the sweep).
+
 ## Outbox settings (`Outbox` section)
 
 ```json
@@ -195,11 +248,15 @@ Tunables: `IRIS_URL`, `INTERVAL`, `STATE_FILE` (default `~/.iris/seen-packages`)
   "RenderVideo": true,        // wrap stills into mp4 for TikTok/YouTube when ffmpeg is present
   "UseContentCreator": false, // opt-in AI media pipeline (costs API credits; falls back to text cards)
   "Git": { "Enabled": true, "Branch": "outbox", "RetentionDays": 14, "Repository": "" },
-  "GoogleDrive": { "Enabled": false, "ServiceAccountJsonPath": "", "FolderId": "" }
+  "GoogleDrive": { "Enabled": false, "ServiceAccountJsonPath": "", "FolderId": "" },
+  "Retention": { "Enabled": true, "KeepDays": 30, "MaxTotalMegabytes": 2048, "KeepUnpostedPackages": true }
 }
 ```
 
-Delivery precedence when both are enabled: **Git wins** (a startup warning is logged).
+`Outbox:Git:Repository` — **strongly recommended: a dedicated private repo** (see *Use
+a dedicated outbox repo* above). Empty falls back to the code repo and bloats every
+clone. Delivery precedence when both Git and Drive are enabled: **Git wins** (a startup
+warning is logged).
 
 ## Endpoint reference
 
@@ -209,6 +266,7 @@ Delivery precedence when both are enabled: **Git wins** (a startup warning is lo
 | `GET /api/outbox/{packageId}` | All platform variants of one package |
 | `POST /api/outbox/build` | Retry pending exports, then build + export the next `PackagesPerRun` queued packages (array) |
 | `POST /api/outbox/{packageId}/export` | Re-export one package whose export failed (idempotent; 409 if its files are gone). Also swept automatically every 15 min by `ExportRetryJob` |
+| `POST /api/outbox/prune-now` | Run the FIFO media-retention sweep now (same as the 09:30 cron) |
 | `POST /api/outbox/{packageId}/{platform}/confirm` | Mark a variant as manually posted (optional body: `{"postUrl":"..."}`) |
 | `POST /api/outbox/{packageId}/{platform}/skip` | Mark a variant as deliberately not posted |
 

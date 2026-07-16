@@ -12,6 +12,10 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
      default 1).
    - Export failed earlier? `POST /api/outbox/{packageId}/export` retries it
      (the 15-min `ExportRetryJob` also does this automatically).
+   - After a Codespace (re)start, confirm the delivery target in the startup log:
+     `Outbox git target: <owner>/<repo> (branch 'outbox')`. A **warning** there means
+     you're pushing to the code repo (set `Outbox:Git:Repository` to a dedicated repo);
+     an **error** means the target is unresolvable and export will fail until fixed.
 2. **Post each platform folder**, one by one:
    - Open `caption.txt` (YouTube: `description.txt`), copy all → platform app → paste
    - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
@@ -45,6 +49,10 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 - **Bump low-performing hooks' score** to 30, or remove from `hooks.json` if dead
 - **Update Linktree link order** based on top-converting destination
 - Old packages age off the `outbox` branch automatically (`RetentionDays`, default 14); SQLite keeps the full record
+- Media retention runs daily at 09:30 UTC; its summary log reads
+  `Retention: pruned N package(s), reclaimed X MB, Y MB remaining, Z kept (unposted)`.
+  Only media is pruned — outbox rows (caption, exportRef, posted state) always stay.
+  Force it with `POST /api/outbox/prune-now`
 
 ## Emergency: package didn't get delivered
 
