@@ -14,7 +14,7 @@
   "customizations": {
     "codespaces": {
       "repositories": {
-        "YOUR-USER/IRIS_Outbox": { "permissions": { "contents": "write" } }
+        "AI7891/IRIS_Outbox": { "permissions": { "contents": "write" } }
       }
     }
   }

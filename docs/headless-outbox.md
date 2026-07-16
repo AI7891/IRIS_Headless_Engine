@@ -153,30 +153,34 @@ At startup the app resolves and logs the push target
 delivery is wired. If it can't resolve a target it logs an **error** but keeps
 serving — outbox export just fails until you fix `Outbox:Git:Repository`.
 
-#### Use a dedicated outbox repo (recommended)
+#### Use a dedicated outbox repo (configured: `AI7891/IRIS_Outbox`)
 
-`git clone` fetches every branch, so leaving `Repository` empty puts two weeks of
-media on a branch of the **code** repo — and every future clone and Codespace rebuild
-then downloads it. Point the outbox at its own repo instead:
+`git clone` fetches every branch, so pointing the outbox at the **code** repo puts two
+weeks of media on a branch of it — and every future clone and Codespace rebuild then
+downloads it. `Outbox:Git:Repository` and the devcontainer grant are already set to
+`AI7891/IRIS_Outbox`; the operator must do these steps, **in order**:
 
-1. Create a private repo, e.g. `you/IRIS_Outbox` (empty is fine).
-2. Set `Outbox:Git:Repository` to `you/IRIS_Outbox`.
-3. Grant the Codespace write access to it — the default `GITHUB_TOKEN` only reaches
-   the source repo. In `.devcontainer/devcontainer.json`:
+1. Create a **private** repo `AI7891/IRIS_Outbox` — empty, **no README**: the exporter
+   force-pushes an orphan branch and will overwrite anything there.
+   It must be private because it holds unpublished content and, via the captions, the
+   tracked links.
+2. **Rebuild the Codespace** — the devcontainer `customizations.codespaces.repositories`
+   permission grant only takes effect when the Codespace is created:
    ```json
    "customizations": {
      "codespaces": {
        "repositories": {
-         "you/IRIS_Outbox": { "permissions": { "contents": "write" } }
+         "AI7891/IRIS_Outbox": { "permissions": { "contents": "write" } }
        }
      }
    }
    ```
-4. **Rebuild the Codespace** (this block only applies on create) — GitHub prompts to
-   authorize the extra repo on the next create.
+3. **Authorize the extra repository** when GitHub prompts on that first create.
+4. Verify with `POST /api/outbox/build` that the `outbox` branch appears in
+   **IRIS_Outbox**, not in `IRIS_Headless_Engine`.
 
-Leaving `Repository` empty still works, but the startup log will **warn** about the
-clone bloat.
+Emptying `Repository` still works (it falls back to the code repo), but the startup
+log will **warn** about the clone bloat.
 
 ### Google Drive (Workspace Shared Drive only — NOT personal Google)
 
