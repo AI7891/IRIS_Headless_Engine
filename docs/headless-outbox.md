@@ -56,6 +56,8 @@ Every day at **09:00 UTC** the `DailyOutboxJob` runs (or trigger it any time wit
    **Non-clickable platforms (Instagram, TikTok)**: a raw URL in the caption is
    inert. The caption prepends `🔗 Link in bio → linktr.ee` above the full UTM URL,
    which stays in the caption so the operator can paste it into the bio/Linktree.
+   For one-tap convenience the same bare tracked URL is also written as
+   `link.txt` in that platform's folder (referenced as `linkFile` in the manifest).
    Keep the bio link carrying `utm_source=instagram` (or `tiktok`) so those joins
    stay attributed; a bio left on the plain Linktree URL still converts, just
    without hook/platform UTMs.
@@ -81,9 +83,9 @@ the UTM link lives inside the caption text the operator pastes.
 ```
 output/outbox/2026-07-15/<packageId>/
 ├── manifest.json          # hook, pillar, per-platform files, confirm endpoints
-├── instagram/  caption.txt (bio cue + URL) · media.png
+├── instagram/  caption.txt (bio cue + URL) · link.txt (bare URL) · media.png
 ├── facebook/   caption.txt · media.png
-├── tiktok/     caption.txt (bio cue + URL) · media.mp4 (media.png fallback)
+├── tiktok/     caption.txt (bio cue + URL) · link.txt (bare URL) · media.mp4 (media.png fallback)
 └── youtube/    title.txt · description.txt · media.mp4 (media.png fallback)
 ```
 

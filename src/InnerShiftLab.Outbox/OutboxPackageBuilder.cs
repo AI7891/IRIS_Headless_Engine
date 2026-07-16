@@ -112,6 +112,11 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
             await File.WriteAllTextAsync(Path.Combine(platformDir, captionFileName), variant.Caption, ct);
             if (variant.Title.Length > 0)
                 await File.WriteAllTextAsync(Path.Combine(platformDir, "title.txt"), variant.Title, ct);
+            // Non-clickable platforms (IG, TikTok): also drop the bare tracked URL as
+            // link.txt so the operator can one-tap copy it into their bio/Linktree.
+            // The caption keeps its "Link in bio →" cue and the URL below it.
+            if (!format.LinksClickable && variant.Link.Length > 0)
+                await File.WriteAllTextAsync(Path.Combine(platformDir, "link.txt"), variant.Link, ct);
 
             var item = new OutboxItem
             {
@@ -143,7 +148,8 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
             instructions = "Post each platform folder manually, then confirm with: POST /api/outbox/{packageId}/{platform}/confirm",
             items = items.Select(i =>
             {
-                var titled = PlatformFormats.Get(i.Platform).TitleMaxChars > 0;
+                var format = PlatformFormats.Get(i.Platform);
+                var titled = format.TitleMaxChars > 0;
                 return new
                 {
                     platform = i.Platform,
@@ -152,6 +158,7 @@ public sealed class OutboxPackageBuilder : IOutboxPackageBuilder
                     captionFile = titled ? null : $"{i.Platform}/caption.txt",
                     titleFile = i.Title.Length > 0 ? $"{i.Platform}/title.txt" : null,
                     descriptionFile = titled ? $"{i.Platform}/description.txt" : null,
+                    linkFile = File.Exists(Path.Combine(packageDir, i.Platform, "link.txt")) ? $"{i.Platform}/link.txt" : null,
                     confirmEndpoint = $"/api/outbox/{slot.SlotId}/{i.Platform}/confirm",
                 };
             }),

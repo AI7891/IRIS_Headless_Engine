@@ -164,7 +164,37 @@ public class OutboxPackageBuilderTests : IDisposable
         var fbCaption = await File.ReadAllTextAsync(Path.Combine(package.PackageDir, "facebook", "caption.txt"));
         Assert.DoesNotContain(PlatformFormatter.LinkInBioCta, fbCaption);
         Assert.Contains("https://linktr.ee/", fbCaption);
-        Assert.False(File.Exists(Path.Combine(package.PackageDir, "instagram", "link.txt")));
+    }
+
+    [Fact]
+    public async Task Build_NonClickablePlatforms_GetBareLinkFile_ClickableDoNot()
+    {
+        var package = await Builder().BuildAsync(Slot());
+
+        // Instagram + TikTok: a link.txt with the bare tracked URL and nothing else.
+        foreach (var platform in new[] { "instagram", "tiktok" })
+        {
+            var linkPath = Path.Combine(package.PackageDir, platform, "link.txt");
+            Assert.True(File.Exists(linkPath), $"link.txt missing for {platform}");
+            var link = await File.ReadAllTextAsync(linkPath);
+            Assert.StartsWith("https://linktr.ee/", link);
+            Assert.Contains($"utm_source={platform}", link);
+            Assert.DoesNotContain(PlatformFormatter.LinkInBioCta, link);
+            Assert.DoesNotContain("\n", link);
+            // The caption still carries the cue + URL — link.txt is an extra convenience.
+            Assert.Contains(PlatformFormatter.LinkInBioCta,
+                await File.ReadAllTextAsync(Path.Combine(package.PackageDir, platform, "caption.txt")));
+        }
+
+        // Clickable platforms: no link.txt (the URL is clickable in the caption).
+        Assert.False(File.Exists(Path.Combine(package.PackageDir, "facebook", "link.txt")));
+        Assert.False(File.Exists(Path.Combine(package.PackageDir, "youtube", "link.txt")));
+
+        // Manifest reflects it: linkFile set for IG, null for Facebook.
+        var manifest = JObject.Parse(await File.ReadAllTextAsync(package.ManifestPath));
+        var items = (JArray)manifest["items"]!;
+        Assert.Equal("instagram/link.txt", items.Single(i => i.Value<string>("platform") == "instagram").Value<string>("linkFile"));
+        Assert.Null(items.Single(i => i.Value<string>("platform") == "facebook").Value<string>("linkFile"));
     }
 
     [Fact]

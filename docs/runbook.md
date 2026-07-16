@@ -15,8 +15,9 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
    - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
    - YouTube uses `title.txt` as the video title and `description.txt` as the description
    - **Instagram & TikTok**: the caption leads with `🔗 Link in bio → linktr.ee` and
-     the full tracked URL sits on its own line below it — copy that URL into your
-     bio/Linktree so those joins keep their hook + platform attribution
+     the full tracked URL sits on its own line below it — or just open `link.txt` in
+     the folder for the bare URL — copy it into your bio/Linktree so those joins keep
+     their hook + platform attribution
    - **Don't edit the link** — it carries the UTM attribution (`utm_source=<platform>`)
 4. **Confirm each post** as you go:
    `POST /api/outbox/{packageId}/{platform}/confirm` with body `{"postUrl":"..."}`
