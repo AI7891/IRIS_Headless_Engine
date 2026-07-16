@@ -5,8 +5,9 @@
 //  Used by both the Quartz DailyOutboxJob and the /api/outbox endpoints.
 //
 //  Guarantees:
-//  - MaxPostsPerDayPerPlatform is honored across the whole day, seeded from the
-//    SQLite outbox table so container restarts don't reset the count.
+//  - OutboxSettings.PackagesPerRun packages are produced per daily run (one
+//    package = one hook across all its platforms); auto-curation tops the queue
+//    up to at least that many when it is empty.
 //  - A failed export never loses content: items stay Pending and are retried
 //    automatically at the start of every daily run, or on demand via
 //    POST /api/outbox/{packageId}/export.
