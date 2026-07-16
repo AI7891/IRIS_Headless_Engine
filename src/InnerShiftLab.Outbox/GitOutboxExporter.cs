@@ -38,6 +38,18 @@ public sealed class GitOutboxExporter : IPackageExporter
         _settings = settings; _outboxRoot = outboxRoot; _appRoot = appRoot; _log = log;
     }
 
+    /// <summary>
+    /// Resolves the push target once at startup so misconfiguration is loud and early
+    /// rather than surfacing as a 09:00 failure and a retry job throwing every 15 minutes.
+    /// Returns "owner/repo". Throws InvalidOperationException with operator guidance if
+    /// unresolvable. Does not push or clone anything.
+    /// </summary>
+    public async Task<string> ValidateTargetAsync(CancellationToken ct = default)
+    {
+        var (owner, repo) = await ResolveRepositoryAsync(ct);
+        return $"{owner}/{repo}";
+    }
+
     public async Task<string> ExportAsync(OutboxPackage package, CancellationToken ct = default)
     {
         var (owner, repo) = await ResolveRepositoryAsync(ct);

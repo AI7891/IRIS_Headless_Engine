@@ -298,6 +298,35 @@ try
         await repo.InitAsync();
     }
 
+    // Fail-fast visibility: resolve the git push target now (no push/clone) so
+    // misconfiguration is loud at startup, not a silent 09:00 failure. Never crash —
+    // the API, heartbeat and webhooks must keep serving even if delivery is broken.
+    if (outboxSettings.Git.Enabled &&
+        app.Services.GetRequiredService<IPackageExporter>() is GitOutboxExporter gitExporter)
+    {
+        try
+        {
+            var target = await gitExporter.ValidateTargetAsync();
+            var parts = target.Split('/');
+            var sameRepo = string.IsNullOrWhiteSpace(outboxSettings.Git.Repository)
+                || GitOutboxExporter.IsSameRepo(parts[0], parts[1],
+                    Environment.GetEnvironmentVariable("GITHUB_REPOSITORY"));
+            if (sameRepo)
+                Log.Warning("Outbox git target resolved to the source repo '{Target}' (branch '{Branch}'). " +
+                    "Media on the outbox branch will bloat every clone and Codespace rebuild — set " +
+                    "Outbox:Git:Repository to a dedicated repo (e.g. you/IRIS_Outbox).",
+                    target, outboxSettings.Git.Branch);
+            else
+                Log.Information("Outbox git target: {Target} (branch '{Branch}')", target, outboxSettings.Git.Branch);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Outbox git export target is unresolvable — outbox export will FAIL until " +
+                "Outbox:Git:Repository is set (or GITHUB_REPOSITORY/origin is available). " +
+                "The API, heartbeat and webhooks keep running.");
+        }
+    }
+
     app.UseSerilogRequestLogging();
 
     // -----------------------------------------------------------------------------
