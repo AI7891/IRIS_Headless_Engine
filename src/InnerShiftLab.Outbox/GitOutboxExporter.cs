@@ -139,6 +139,18 @@ public sealed class GitOutboxExporter : IPackageExporter
         return owner.Length > 0 && repo.Length > 0;
     }
 
+    /// <summary>
+    /// True when owner/repo is the source code repo (from GITHUB_REPOSITORY or the origin
+    /// remote), meaning the outbox media would land on a branch of the code repo and bloat
+    /// every future clone. Comparison is case-insensitive.
+    /// </summary>
+    internal static bool IsSameRepo(string owner, string repo, string? sourceOwnerRepo)
+    {
+        if (!TryParseOwnerRepo(sourceOwnerRepo, out var srcOwner, out var srcRepo)) return false;
+        return string.Equals(owner, srcOwner, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(repo, srcRepo, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Pulls "owner/repo" out of an https or ssh git remote URL.</summary>
     internal static string? ExtractOwnerRepoFromUrl(string? url)
     {
@@ -229,8 +241,9 @@ public sealed class GitOutboxExporter : IPackageExporter
             "# IRIS Outbox",
             "",
             $"This orphan branch (`{branch}`) is the phone pickup point for the IRIS headless",
-            "content factory. Each dated folder holds one or more ready-to-post packages —",
-            "media plus caption/title/description/link text files and a `manifest.json`.",
+            "content factory (it may live in the code repo or a dedicated outbox repo). Each",
+            "dated folder holds one or more ready-to-post packages — media plus",
+            "caption/title/description/link text files and a `manifest.json`.",
             "",
             "**It is force-pushed as a single squashed commit on every export and is NOT code.**",
             "Do not merge it. SQLite remains the source of truth; only the last few days of",

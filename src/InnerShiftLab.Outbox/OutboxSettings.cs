@@ -60,7 +60,12 @@ public sealed class GitExportSettings
     public string Branch { get; set; } = "outbox";
     /// <summary>Days of packages kept on the branch. Older ones are dropped on the next export.</summary>
     public int RetentionDays { get; set; } = 14;
-    /// <summary>owner/repo. Empty = derive from the GITHUB_REPOSITORY env var (set in Codespaces/Actions).</summary>
+    /// <summary>
+    /// owner/repo to push packages to. <b>Strongly recommended: a dedicated private repo</b>,
+    /// e.g. <c>you/IRIS_Outbox</c>. Empty falls back to the source code repo (via
+    /// GITHUB_REPOSITORY / the origin remote), which means every future clone and Codespace
+    /// rebuild downloads the media accumulated on the outbox branch.
+    /// </summary>
     public string Repository { get; set; } = "";
 }
 

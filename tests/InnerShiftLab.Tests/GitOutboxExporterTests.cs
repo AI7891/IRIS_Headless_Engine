@@ -90,6 +90,16 @@ public class GitOutboxExporterTests : IDisposable
         Assert.Equal(expected, GitOutboxExporter.ExtractOwnerRepoFromUrl(url));
     }
 
+    [Theory]
+    [InlineData("AI7891", "IRIS_Headless_Engine", "AI7891/IRIS_Headless_Engine", true)]
+    [InlineData("ai7891", "iris_headless_engine", "AI7891/IRIS_Headless_Engine", true)] // case-insensitive
+    [InlineData("AI7891", "IRIS_Outbox", "AI7891/IRIS_Headless_Engine", false)]
+    [InlineData("AI7891", "IRIS_Outbox", null, false)]
+    public void IsSameRepo_DetectsSourceRepoCaseInsensitively(string owner, string repo, string? source, bool expected)
+    {
+        Assert.Equal(expected, GitOutboxExporter.IsSameRepo(owner, repo, source));
+    }
+
     [Fact]
     public void BuildPickupUrl_EscapesEachFolderSegment()
     {
