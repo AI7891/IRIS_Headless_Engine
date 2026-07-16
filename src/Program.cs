@@ -26,8 +26,10 @@ using InnerShiftLab.Providers;
 using InnerShiftLab.Scheduling;
 using InnerShiftLab.Security;
 using Microsoft.AspNetCore.Http.Json;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Threading.RateLimiting;
 using Quartz;
 using Serilog;
 using System.Text.Json;
@@ -75,6 +77,32 @@ try
     // Swagger/OpenAPI — required by app.UseSwagger()/UseSwaggerUI() below and the "/" landing page.
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen();
+
+    // Don't advertise the server implementation.
+    builder.WebHost.ConfigureKestrel(o => o.AddServerHeader = false);
+
+    // Flood brake (not a fairness system): reject bursts BEFORE any crypto runs.
+    // Behind Codespaces port forwarding many requests may share an IP; acceptable.
+    builder.Services.AddRateLimiter(o =>
+    {
+        o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 120,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                }));
+        // Tighter on the two endpoints that are exempt from the API key.
+        o.AddFixedWindowLimiter("webhook", w =>
+        {
+            w.PermitLimit = 20;
+            w.Window = TimeSpan.FromMinutes(1);
+            w.QueueLimit = 0;
+        });
+    });
 
     // -----------------------------------------------------------------------------
     // 2. Bind strongly-typed config sections (fail fast if missing)
@@ -374,11 +402,15 @@ try
         }
     }
 
-    app.UseSerilogRequestLogging();
-
-    // Front door: every request needs X-Iris-Key. /healthz and /readyz included —
-    // the heartbeat sends the header; an anonymous prober learns nothing.
+    // Security pipeline — the ordering is the point: headers apply to everything
+    // (including 401s/429s), floods are rejected before any crypto runs, then the
+    // front door. /healthz and /readyz are behind the key too — the heartbeat sends
+    // the header; an anonymous prober learns nothing.
+    app.UseSecurityHeaders();
+    app.UseRateLimiter();
     app.UseMiddleware<ApiKeyMiddleware>();
+
+    app.UseSerilogRequestLogging();
 
     // -----------------------------------------------------------------------------
     // 6. HTTP surface — control plane for phone operator
@@ -551,7 +583,7 @@ try
             // Meta subscription verification: echo hub.challenge as plain text on success.
             var challenge = w.VerifyMetaChallenge(ctx.Request.Query);
             return challenge != null ? Results.Text(challenge) : Results.StatusCode(403);
-        });
+        }).RequireRateLimiting("webhook");
         app.MapPost("/auth/meta/webhook",  async (
             HttpContext ctx, IWebhookVerifier w, IRepository r) =>
         {
@@ -560,10 +592,11 @@ try
             if (!ok) return Results.Unauthorized();
             await r.RecordWebhookAsync("meta", body);
             return Results.Ok();
-        });
+        }).RequireRateLimiting("webhook");
     }
 
-    // Skool webhook — receives join events, links to UTMs
+    // Skool webhook — receives join events, links to UTMs. Exempt from the API key
+    // (verified by HMAC instead), so it gets the tighter webhook rate limit.
     app.MapPost("/webhook/skool", async (
         HttpContext ctx, IWebhookVerifier w, IMonetizationLogger m) =>
     {
@@ -572,7 +605,7 @@ try
         if (!ok) return Results.Unauthorized();
         await m.LogSkoolJoinAsync(body);
         return Results.Ok();
-    });
+    }).RequireRateLimiting("webhook");
 
     // Content creator endpoints — AI script -> carousel -> voiceover -> composed output
     app.MapPost("/api/creator/script", async (CreatorRequest? req, IScriptGenerator g, CancellationToken ct) =>
