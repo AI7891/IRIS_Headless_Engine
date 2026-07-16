@@ -50,6 +50,10 @@ public sealed class GitOutboxExporter : IPackageExporter
         return $"{owner}/{repo}";
     }
 
+    // PruneAsync: default no-op. The next export force-pushes a mirror of whatever
+    // remains locally, so deleting a package's local dir already removes it from the
+    // branch on the following export — nothing to do here.
+
     public async Task<string> ExportAsync(OutboxPackage package, CancellationToken ct = default)
     {
         var (owner, repo) = await ResolveRepositoryAsync(ct);

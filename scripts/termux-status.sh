@@ -43,6 +43,9 @@ if command -v jq >/dev/null 2>&1; then
   echo "outbox   : ${pending:-?} pending · ${exported:-?} exported (awaiting post)"
   pickup=$(fetch '/api/outbox?status=Exported' | jq -r 'sort_by(.createdAt) | last | .exportRef // empty')
   [ -n "$pickup" ] && echo "pickup   : $pickup"
+  # Retention: how many items still have local media vs pruned (records are always kept).
+  fetch '/api/outbox?limit=1000' | jq -r '
+    "media    : \([.[] | select(.mediaPruned | not)] | length) live · \([.[] | select(.mediaPruned)] | length) pruned"'
 
   fetch /api/monetization/summary | jq -r '
     "revenue  : €\(.totalRevenueEur)   joins:\(.totalJoins)   clicks:\(.totalClicks)",

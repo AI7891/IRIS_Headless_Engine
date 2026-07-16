@@ -51,6 +51,21 @@ public sealed class OutboxSettings
     public GitExportSettings Git { get; set; } = new();
 
     public GoogleDriveSettings GoogleDrive { get; set; } = new();
+
+    /// <summary>FIFO media retention. Rows in the outbox table are always kept (they carry
+    /// attribution); only the rendered media/text files are pruned, oldest first.</summary>
+    public RetentionSettings Retention { get; set; } = new();
+}
+
+public sealed class RetentionSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Hard age cap. Media older than this is pruned even if never posted (abandoned).</summary>
+    public int KeepDays { get; set; } = 30;
+    /// <summary>FIFO size cap on the local outbox root. Oldest eligible packages are pruned until under it. 0 = no size cap.</summary>
+    public int MaxTotalMegabytes { get; set; } = 2048;
+    /// <summary>Keep media for packages not yet posted/skipped, until KeepDays forces the issue.</summary>
+    public bool KeepUnpostedPackages { get; set; } = true;
 }
 
 public sealed class GitExportSettings

@@ -264,6 +264,18 @@ try
             .WithIdentity("webhook-sweep-trigger")
             .WithSimpleSchedule(s => s.WithIntervalInMinutes(5).RepeatForever()));
 
+        // FIFO media retention: 09:30 UTC — 30 min after the daily build so it never
+        // races the day's packages. Prunes only media; outbox rows are always kept.
+        if (outboxSettings.Retention.Enabled)
+        {
+            var retention = JobKey.Create("retention");
+            q.AddJob<RetentionJob>(h => h.WithIdentity(retention).StoreDurably());
+            q.AddTrigger(t => t
+                .ForJob(retention)
+                .WithIdentity("retention-trigger")
+                .WithCronSchedule("0 30 9 * * ?", b => b.InTimeZone(TimeZoneInfo.Utc)));
+        }
+
         if (autoPublish)
         {
             // QUARANTINED: automated publishing + OAuth token refresh. Never
@@ -398,6 +410,16 @@ try
             // Package files gone from disk, or Drive misconfigured — tell the operator why.
             return Results.Conflict(new { message = ex.Message });
         }
+    });
+
+    // Run the FIFO media-retention sweep on demand (same job as the 09:30 cron).
+    app.MapPost("/api/outbox/prune-now", async (ISchedulerFactory sf, CancellationToken ct) =>
+    {
+        if (!outboxSettings.Retention.Enabled)
+            return Results.BadRequest(new { message = "Retention is disabled (Outbox:Retention:Enabled=false)." });
+        var scheduler = await sf.GetScheduler(ct);
+        await scheduler.TriggerJob(JobKey.Create("retention"), ct);
+        return Results.Accepted(value: new { triggered = true });
     });
 
     app.MapPost("/api/outbox/{packageId}/{platform}/confirm", async (

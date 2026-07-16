@@ -263,6 +263,42 @@ public class SqliteRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MediaPruned_RoundTrips_AndGetPrunableFiltersByAgeAndStatus()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var recentPosted = NewOutboxItem("recent-posted", "instagram");
+        recentPosted.Status = OutboxStatus.Posted;
+        recentPosted.CreatedAt = now.AddDays(-1);
+        await _repo.SaveOutboxItemAsync(recentPosted);
+
+        var recentPending = NewOutboxItem("recent-pending", "instagram");
+        recentPending.CreatedAt = now.AddDays(-1); // Pending (default), within keep window
+        await _repo.SaveOutboxItemAsync(recentPending);
+
+        var oldPending = NewOutboxItem("old-pending", "instagram");
+        oldPending.CreatedAt = now.AddDays(-40);
+        await _repo.SaveOutboxItemAsync(oldPending);
+
+        var cutoff = now.AddDays(-30);
+        var ids = await _repo.GetPrunablePackageIdsAsync(keepUnposted: true, olderThanUtc: cutoff);
+
+        // recent-posted (terminal) and old-pending (abandoned) are prunable; recent-pending is not.
+        Assert.Contains("recent-posted", ids);
+        Assert.Contains("old-pending", ids);
+        Assert.DoesNotContain("recent-pending", ids);
+        // Oldest first.
+        Assert.True(ids.ToList().IndexOf("old-pending") < ids.ToList().IndexOf("recent-posted"));
+
+        // Prune flips the flag and round-trips; other fields intact.
+        Assert.Equal(1, await _repo.MarkOutboxMediaPrunedAsync("recent-posted"));
+        var pruned = Assert.Single(await _repo.GetOutboxPackageAsync("recent-posted"));
+        Assert.True(pruned.MediaPruned);
+        Assert.Equal("caption with utm link", pruned.Caption);
+        // Now excluded from prunable.
+        Assert.DoesNotContain("recent-posted", await _repo.GetPrunablePackageIdsAsync(true, cutoff));
+    }
+
+    [Fact]
     public async Task GetPost_RoundTripsSavedSlot_AndReturnsNullForUnknown()
     {
         var slot = new PostSlot
