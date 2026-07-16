@@ -24,6 +24,7 @@ using InnerShiftLab.Monetization;
 using InnerShiftLab.Outbox;
 using InnerShiftLab.Providers;
 using InnerShiftLab.Scheduling;
+using InnerShiftLab.Security;
 using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -78,6 +79,21 @@ try
     // -----------------------------------------------------------------------------
     // 2. Bind strongly-typed config sections (fail fast if missing)
     // -----------------------------------------------------------------------------
+    // Secrets never live in appsettings.json (this repo is public): short env-var
+    // names win over any config value. Written into configuration BEFORE binding so
+    // both the direct .Get<>() reads and the IOptions<> path see them.
+    foreach (var (envVar, configKey) in new[]
+    {
+        ("IRIS_API_KEY", "Security:ApiKey"),
+        ("SKOOL_WEBHOOK_SECRET", "Monetization:SkoolWebhookSecret"),
+        ("META_APP_SECRET", "Monetization:MetaAppSecret"),
+    })
+    {
+        var value = Environment.GetEnvironmentVariable(envVar);
+        if (!string.IsNullOrWhiteSpace(value))
+            builder.Configuration[configKey] = value;
+    }
+
     var irisSection = builder.Configuration.GetSection("Iris");
     builder.Services.Configure<IrisSettings>(irisSection);
 
@@ -105,6 +121,25 @@ try
         ?? throw new InvalidOperationException("Missing [Socials] config section in appsettings.json");
     var monetizationSettings = monetizationSection.Get<MonetizationSettings>()
         ?? throw new InvalidOperationException("Missing [Monetization] config section in appsettings.json");
+
+    static bool IsPlaceholderSecret(string? s) =>
+        string.IsNullOrWhiteSpace(s) || s.Contains("change-me", StringComparison.OrdinalIgnoreCase)
+        || s.Contains("REPLACE_ME", StringComparison.OrdinalIgnoreCase);
+
+    // API key: the one place a hard crash is correct — an app that boots without a
+    // key on a public port is worse than an app that does not boot.
+    var securitySettings = builder.Configuration.GetSection("Security").Get<SecuritySettings>() ?? new SecuritySettings();
+    SecuritySettings.Validate(securitySettings);
+    builder.Services.AddSingleton(securitySettings);
+
+    // Webhook secrets are optional (the webhooks themselves are), so placeholders
+    // warn rather than throw — but say exactly which env var fixes it.
+    if (IsPlaceholderSecret(monetizationSettings.SkoolWebhookSecret))
+        Log.Warning("Monetization:SkoolWebhookSecret is a placeholder — Skool webhook signatures will not verify. " +
+                    "Set the SKOOL_WEBHOOK_SECRET environment variable (Codespaces secret).");
+    if (IsPlaceholderSecret(monetizationSettings.MetaAppSecret))
+        Log.Warning("Monetization:MetaAppSecret is a placeholder — Meta webhook signatures will not verify. " +
+                    "Set the META_APP_SECRET environment variable (Codespaces secret).");
 
     // -----------------------------------------------------------------------------
     // 3. Singletons — engine, providers, repositories, scheduler
@@ -340,6 +375,10 @@ try
     }
 
     app.UseSerilogRequestLogging();
+
+    // Front door: every request needs X-Iris-Key. /healthz and /readyz included —
+    // the heartbeat sends the header; an anonymous prober learns nothing.
+    app.UseMiddleware<ApiKeyMiddleware>();
 
     // -----------------------------------------------------------------------------
     // 6. HTTP surface — control plane for phone operator

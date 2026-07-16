@@ -8,6 +8,9 @@ obj/
 # Runtime state (generated at runtime, must never be committed)
 data/
 output/
+
+# Secrets (never committed — this repo is public)
+**/gdrive-sa.json
 *.db
 *.db-shm
 *.db-wal
