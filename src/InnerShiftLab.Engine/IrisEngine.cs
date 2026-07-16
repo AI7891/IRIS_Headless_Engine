@@ -178,8 +178,7 @@ public sealed class IrisEngine : IIrisEngine
 
     private string BuildCaption(Hook hook, Pillar pillar)
     {
-        var utm = $"utm_source=auto&utm_medium=social&utm_campaign={Uri.EscapeDataString(hook.Id)}&utm_content={Uri.EscapeDataString(pillar.ToString())}&utm_term=iris";
-        var link = $"{_settings.LinktreeUrl}?{utm}";
+        var link = UtmLinks.BuildTracked(_settings.LinktreeUrl, hook.Id, pillar.ToString());
 
         var pillarTag = pillar switch
         {

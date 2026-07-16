@@ -36,11 +36,21 @@ if command -v jq >/dev/null 2>&1; then
     "  tiktok : \(.tiktok.status)   \(.tiktok.expiresAt // "")",
     "  youtube: \(.youtube.status)   \(.youtube.expiresAt // "")"'
   echo "queue    : $(fetch /api/iris/queue | jq 'length') slot(s)"
+
+  # Outbox: what's waiting to be posted manually, and where to pick it up.
+  pending=$(fetch '/api/outbox?status=Pending' | jq 'length')
+  exported=$(fetch '/api/outbox?status=Exported' | jq 'length')
+  echo "outbox   : ${pending:-?} pending · ${exported:-?} exported (awaiting post)"
+  pickup=$(fetch '/api/outbox?status=Exported' | jq -r 'sort_by(.createdAt) | last | .exportRef // empty')
+  [ -n "$pickup" ] && echo "pickup   : $pickup"
+
   fetch /api/monetization/summary | jq -r '
-    "revenue  : €\(.totalRevenueEur)   joins:\(.totalJoins)   clicks:\(.totalClicks)"'
+    "revenue  : €\(.totalRevenueEur)   joins:\(.totalJoins)   clicks:\(.totalClicks)",
+    "by source: \((.bySource // []) | map("\(.source) €\(.revenueEur)") | join("   "))"'
 else
   echo "(install jq for a clean view:  pkg install jq)"
   echo "providers: $(fetch /api/providers/status)"
   echo "queue    : $(fetch /api/iris/queue)"
+  echo "outbox   : $(fetch '/api/outbox?status=Pending')"
   echo "summary  : $(fetch /api/monetization/summary)"
 fi

@@ -16,9 +16,15 @@ namespace InnerShiftLab.Engine;
 
 public interface IContentRenderer
 {
-    Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default");
+    Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default", int width = 1080, int height = 1080);
     Task<string> RenderPdfAsync(string title, IEnumerable<string> sections, string? outPath = null);
     Task<string> RenderVideoAsync(string text, string backgroundPath, string? outPath = null, int durationSec = 15);
+
+    /// <summary>Resizes an existing image to exactly width×height, cover-cropping centred (no stretch).</summary>
+    Task<string> ResizeImageAsync(string sourcePath, string outPath, int width, int height);
+
+    /// <summary>Re-encodes an existing video to exactly width×height, cover-cropping centred (no stretch).</summary>
+    Task<string> ResizeVideoAsync(string sourcePath, string outPath, int width, int height);
 }
 
 public sealed class ContentRenderer : IContentRenderer
@@ -32,13 +38,13 @@ public sealed class ContentRenderer : IContentRenderer
         _outputDir = AppPaths.OutputDir(AppPaths.ResolveRoot(env.ContentRootPath));
     }
 
-    public async Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default")
+    public async Task<string> RenderImageAsync(string text, string? outPath = null, string palette = "iris-default", int width = 1080, int height = 1080)
     {
         outPath ??= Path.Combine(_outputDir, $"iris-{Guid.NewGuid():N}.png");
         Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
 
-        // 1080x1080 — IG square
-        using var img = new Image<Rgba32>(1080, 1080);
+        // Defaults to 1080x1080 (IG square); the outbox passes per-platform dimensions.
+        using var img = new Image<Rgba32>(width, height);
         var (bg, fg) = palette switch
         {
             "iris-dark" => (Color.FromRgb(15, 23, 42), Color.FromRgb(245, 158, 11)),
@@ -47,18 +53,28 @@ public sealed class ContentRenderer : IContentRenderer
         };
         img.Mutate(c => c.Fill(bg));
 
-        var lines = WrapText(text, 28);
-        var y = 200;
+        // Portrait 9:16 (TikTok / Reels / Shorts) has UI chrome down the right rail
+        // and across the bottom: cap the text region to the safe zone so nothing
+        // lands under it. Square / 4:5 keep the original near-full-height layout.
+        var portrait = height > width;
+        var textWidth = portrait ? width - 200 : width - 120;
+        var maxTextBottom = portrait ? (int)(height * 0.70) : height - 140;
+
+        // Wrap relative to the usable text width so lines fill without overrunning.
+        var lines = WrapText(text, Math.Max(12, 28 * textWidth / 960));
+        var y = height / 5;
         // Resolve a font family: prefer an installed system font, otherwise load one from disk.
         var family = ResolveFontFamily();
         var font = family.CreateFont(48, SixLabors.Fonts.FontStyle.Bold);
         var smallFont = family.CreateFont(28, SixLabors.Fonts.FontStyle.Regular);
         foreach (var line in lines)
         {
+            if (y + 60 > maxTextBottom) break;
             img.Mutate(c => c.DrawText(line, font, fg, new PointF(60, y)));
             y += 80;
         }
-        img.Mutate(c => c.DrawText("The Inner Shift Lab · IRIS Method", smallFont, fg, new PointF(60, 980)));
+        img.Mutate(c => c.DrawText("The Inner Shift Lab · IRIS Method", smallFont, fg,
+            new PointF(60, Math.Min(height - 100, maxTextBottom + 20))));
 
         await img.SaveAsPngAsync(outPath);
         _log.LogInformation("Rendered image: {Path}", outPath);
@@ -134,6 +150,50 @@ public sealed class ContentRenderer : IContentRenderer
             throw new InvalidOperationException($"ffmpeg failed: {err}");
         }
         _log.LogInformation("Rendered video: {Path}", outPath);
+        return outPath;
+    }
+
+    public async Task<string> ResizeImageAsync(string sourcePath, string outPath, int width, int height)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+        using var img = await SixLabors.ImageSharp.Image.LoadAsync(sourcePath);
+        // Cover-crop centred: fill the target box without distortion, trimming overflow.
+        img.Mutate(c => c.Resize(new ResizeOptions
+        {
+            Size = new SixLabors.ImageSharp.Size(width, height),
+            Mode = ResizeMode.Crop,
+            Position = AnchorPositionMode.Center,
+        }));
+        await img.SaveAsPngAsync(outPath);
+        _log.LogInformation("Resized image to {W}x{H}: {Path}", width, height, outPath);
+        return outPath;
+    }
+
+    public async Task<string> ResizeVideoAsync(string sourcePath, string outPath, int width, int height)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+        var psi = new System.Diagnostics.ProcessStartInfo("ffmpeg")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-y");
+        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
+        // scale to cover, then centre-crop to the exact target — no stretching.
+        psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(
+            $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}");
+        psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("yuv420p");
+        psi.ArgumentList.Add(outPath);
+
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        await p.WaitForExitAsync();
+        if (p.ExitCode != 0)
+        {
+            var err = await p.StandardError.ReadToEndAsync();
+            throw new InvalidOperationException($"ffmpeg resize failed: {err}");
+        }
+        _log.LogInformation("Resized video to {W}x{H}: {Path}", width, height, outPath);
         return outPath;
     }
 

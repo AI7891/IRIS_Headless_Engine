@@ -1,0 +1,237 @@
+// =============================================================================
+//  Outbox service — the daily human-in-the-loop cycle:
+//  curate (IIrisEngine, untouched) -> build per-platform packages -> export to
+//  the operator's pickup location -> wait for manual posting -> confirm.
+//  Used by both the Quartz DailyOutboxJob and the /api/outbox endpoints.
+//
+//  Guarantees:
+//  - OutboxSettings.PackagesPerRun packages are produced per daily run (one
+//    package = one hook across all its platforms); auto-curation tops the queue
+//    up to at least that many when it is empty.
+//  - A failed export never loses content: items stay Pending and are retried
+//    automatically at the start of every daily run, or on demand via
+//    POST /api/outbox/{packageId}/export.
+// =============================================================================
+using InnerShiftLab.Core;
+using InnerShiftLab.Engine;
+
+namespace InnerShiftLab.Outbox;
+
+public interface IOutboxService
+{
+    /// <summary>
+    /// Retries any pending exports, then builds and exports the next
+    /// <see cref="OutboxSettings.PackagesPerRun"/> queued packages (auto-curating
+    /// top hooks when the queue is empty). Per-package try/catch: one failure does
+    /// not block the rest. Empty when no hooks are available.
+    /// </summary>
+    Task<IReadOnlyList<OutboxPackage>> BuildDailyPackagesAsync(CancellationToken ct = default);
+
+    /// <summary>Single-package convenience path: the first package from <see cref="BuildDailyPackagesAsync"/>, or null.</summary>
+    Task<OutboxPackage?> BuildDailyPackageAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Exports (or re-exports) a package from its persisted rows — no re-rendering.
+    /// Returns the export reference, or null when the package doesn't exist.
+    /// Idempotent: an already exported package returns its existing reference.
+    /// </summary>
+    Task<string?> ExportPackageAsync(string packageId, CancellationToken ct = default);
+
+    /// <summary>Operator confirmation that one platform variant was posted manually. False when the variant doesn't exist or was skipped.</summary>
+    Task<bool> ConfirmPostedAsync(string packageId, string platform, string? postUrl, CancellationToken ct = default);
+
+    /// <summary>Operator decision not to post one platform variant. False when the variant doesn't exist or was already posted.</summary>
+    Task<bool> SkipAsync(string packageId, string platform, CancellationToken ct = default);
+}
+
+public sealed class OutboxService : IOutboxService
+{
+    private readonly IIrisEngine _engine;
+    private readonly IOutboxPackageBuilder _builder;
+    private readonly IPackageExporter _exporter;
+    private readonly IRepository _repo;
+    private readonly OutboxSettings _settings;
+    private readonly ILogger<OutboxService> _log;
+
+    public OutboxService(IIrisEngine engine, IOutboxPackageBuilder builder, IPackageExporter exporter,
+        IRepository repo, OutboxSettings settings, ILogger<OutboxService> log)
+    {
+        _engine = engine; _builder = builder; _exporter = exporter; _repo = repo;
+        _settings = settings; _log = log;
+    }
+
+    public async Task<IReadOnlyList<OutboxPackage>> BuildDailyPackagesAsync(CancellationToken ct = default)
+    {
+        await RetryPendingExportsAsync(ct);
+
+        var perRun = Math.Max(1, _settings.PackagesPerRun);
+        var queued = _engine.GetCurrentQueue();
+        if (queued.Count == 0)
+        {
+            _log.LogInformation("Outbox: queue empty, auto-curating from top hooks");
+            // Never starve the run: curate at least enough hooks to fill PackagesPerRun.
+            var top = _engine.GetAllHooks().OrderByDescending(h => h.Score)
+                .Take(Math.Max(3, perRun)).ToList();
+            foreach (var h in top)
+                _engine.Enqueue(h.Id, h.PrimaryPillar, h.BestFor);
+            queued = _engine.GetCurrentQueue();
+        }
+
+        if (queued.Count == 0)
+        {
+            _log.LogWarning("Outbox: nothing to package — no hooks available");
+            return Array.Empty<OutboxPackage>();
+        }
+
+        var packages = new List<OutboxPackage>();
+        foreach (var slot in queued.Take(perRun))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var package = await _builder.BuildAsync(slot, platforms: null, ct);
+                await TryExportAsync(package, ct);
+
+                // Track the slot in the posts table for continuity; it stays Queued
+                // until the operator confirms every platform, then flips to Published.
+                slot.Status = PostStatus.Queued;
+                await _repo.SavePostAsync(slot);
+                _engine.RemoveFromQueue(slot);
+                packages.Add(package);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // One package failing to build must not sink the others in the run.
+                _log.LogError(ex, "Outbox: building package for slot {Slot} failed; leaving it queued", slot.SlotId);
+            }
+        }
+        return packages;
+    }
+
+    public async Task<OutboxPackage?> BuildDailyPackageAsync(CancellationToken ct = default)
+        => (await BuildDailyPackagesAsync(ct)).FirstOrDefault();
+
+    public async Task<string?> ExportPackageAsync(string packageId, CancellationToken ct = default)
+    {
+        var items = await _repo.GetOutboxPackageAsync(packageId);
+        if (items.Count == 0) return null;
+
+        var existingRef = items.Select(i => i.ExportRef).FirstOrDefault(r => !string.IsNullOrEmpty(r));
+        if (items.All(i => i.Status != OutboxStatus.Pending) && existingRef != null)
+            return existingRef; // already exported — nothing to retry
+
+        // The package directory is persisted with every item; fall back to deriving
+        // it from the media path for rows written before the package_dir column.
+        var first = items[0];
+        var packageDir = !string.IsNullOrEmpty(first.PackageDir)
+            ? first.PackageDir
+            : Path.GetDirectoryName(Path.GetDirectoryName(first.MediaPath));
+        if (packageDir == null || !Directory.Exists(packageDir))
+            throw new InvalidOperationException(
+                $"Package files for '{packageId}' no longer exist on disk ({packageDir}). " +
+                "Run POST /api/outbox/build to produce a fresh package.");
+
+        var package = new OutboxPackage(packageId, first.HookId, "", first.Pillar,
+            first.CreatedAt, packageDir, Path.Combine(packageDir, "manifest.json"), items);
+        var exportRef = await _exporter.ExportAsync(package, ct);
+        await _repo.MarkOutboxExportedAsync(packageId, exportRef);
+        _log.LogInformation("Outbox package {PackageId} re-exported to {Ref}", packageId, exportRef);
+        return exportRef;
+    }
+
+    public async Task<bool> ConfirmPostedAsync(string packageId, string platform, string? postUrl, CancellationToken ct = default)
+    {
+        if (!await _repo.MarkOutboxPostedAsync(packageId, platform, postUrl))
+            return false;
+        await SyncPostRowAsync(packageId, platform, "posted");
+        return true;
+    }
+
+    public async Task<bool> SkipAsync(string packageId, string platform, CancellationToken ct = default)
+    {
+        if (!await _repo.MarkOutboxSkippedAsync(packageId, platform))
+            return false;
+        await SyncPostRowAsync(packageId, platform, "skipped");
+        return true;
+    }
+
+    /// <summary>
+    /// Mirrors outbox progress into the posts table so existing reporting keeps
+    /// working. Updates the row saved at build time in place — never reconstructs
+    /// it — so HookText/ScheduledAt/MediaUrl survive every confirm.
+    /// </summary>
+    private async Task SyncPostRowAsync(string packageId, string platform, string action)
+    {
+        var items = await _repo.GetOutboxPackageAsync(packageId);
+        if (items.Count == 0)
+        {
+            // The status update succeeded but the package rows are gone (concurrent
+            // cleanup?) — nothing to mirror, and the confirmation itself stands.
+            _log.LogWarning("Outbox {Action}: {PackageId}/{Platform} confirmed but package rows are missing",
+                action, packageId, platform);
+            return;
+        }
+
+        var posted = items.Where(i => i.Status == OutboxStatus.Posted).ToList();
+        var allDone = items.All(i => i.Status is OutboxStatus.Posted or OutboxStatus.Skipped);
+
+        var post = await _repo.GetPostAsync(packageId);
+        if (post == null)
+        {
+            var first = items[0];
+            post = new PostSlot
+            {
+                SlotId = packageId,
+                HookId = first.HookId,
+                Pillar = first.Pillar,
+                Platforms = items.Select(i => i.Platform).ToArray(),
+                Caption = first.Caption,
+                ScheduledAt = first.CreatedAt,
+            };
+        }
+
+        post.Status = allDone
+            ? (posted.Count > 0 ? PostStatus.Published : PostStatus.Failed)
+            : (posted.Count > 0 ? PostStatus.Publishing : PostStatus.Queued);
+        if (allDone && posted.Count == 0)
+            post.Error = "All platform variants were skipped by the operator";
+        post.PerPlatformUrls = posted.Where(i => !string.IsNullOrEmpty(i.PostUrl)).Select(i => i.PostUrl!).ToArray();
+        await _repo.SavePostAsync(post);
+
+        _log.LogInformation("Outbox {Action}: {PackageId}/{Platform} ({Posted}/{Total} platforms posted)",
+            action, packageId, platform, posted.Count, items.Count);
+    }
+
+    /// <summary>Re-exports every package that still has Pending items (i.e. a previous export failed).</summary>
+    private async Task RetryPendingExportsAsync(CancellationToken ct)
+    {
+        foreach (var packageId in await _repo.GetUnexportedPackageIdsAsync())
+        {
+            try
+            {
+                await ExportPackageAsync(packageId, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogError(ex, "Outbox: re-export of {PackageId} failed; will retry on the next run", packageId);
+            }
+        }
+    }
+
+    private async Task TryExportAsync(OutboxPackage package, CancellationToken ct)
+    {
+        try
+        {
+            var exportRef = await _exporter.ExportAsync(package, ct);
+            await _repo.MarkOutboxExportedAsync(package.PackageId, exportRef);
+            _log.LogInformation("Outbox package {PackageId} ready for pickup at {Ref}", package.PackageId, exportRef);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogError(ex,
+                "Outbox export failed for {PackageId}; package remains local at {Dir}. The 15-minute " +
+                "export-retry sweep will re-export it, or force it via POST /api/outbox/{PackageId}/export",
+                package.PackageId, package.PackageDir, package.PackageId);
+        }
+    }
+}

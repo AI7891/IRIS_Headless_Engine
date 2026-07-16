@@ -1,27 +1,40 @@
 # Daily Operator Runbook — Phone-Driven
 
-This is the day-to-day playbook. Designed to be done entirely from an Android phone + GitHub Codespaces web UI.
+This is the day-to-day playbook. Designed to be done entirely from an Android phone + GitHub Codespaces web UI. The daily loop is the **outbox workflow** (see [headless-outbox.md](headless-outbox.md)): IRIS renders and exports a package every morning; you post it manually and confirm.
 
-## Morning (5 minutes)
+## Morning (10 minutes)
 
 1. **Tap Healthcheck shortcut** → `GET /healthz` should return `{"status":"ok"}`
-2. **Tap Provider Status shortcut** → `GET /api/providers/status`
-   - All three (Meta, TikTok, YouTube) should show `"valid"`
-   - If `"expired"` or `"no_token"`, tap the corresponding re-auth shortcut
-3. **Tap Today's Conversions shortcut** → review `GET /api/monetization/conversions?limit=10`
-4. **Glance at `/api/iris/queue`** → see what the scheduler will publish today
+2. **Open the Google Drive `IRIS Outbox` folder** → today's package(s) appeared at
+   09:00 UTC as `<date> <hookId>/` (`Outbox:PackagesPerRun` of them, default 1)
+   - Not there? `GET /api/outbox` to check status, or `POST /api/outbox/build` to build now
+   - Export failed earlier? `POST /api/outbox/{packageId}/export` retries it
+     (the 15-min `ExportRetryJob` also does this automatically)
+3. **Post each platform folder**, one by one:
+   - Open `caption.txt` (YouTube: `description.txt`), copy all → platform app → paste
+   - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
+   - YouTube uses `title.txt` as the video title and `description.txt` as the description
+   - **Instagram & TikTok**: the caption leads with `🔗 Link in bio → linktr.ee` and
+     the full tracked URL sits on its own line below it — or just open `link.txt` in
+     the folder for the bare URL — copy it into your bio/Linktree so those joins keep
+     their hook + platform attribution
+   - **Don't edit the link** — it carries the UTM attribution (`utm_source=<platform>`)
+4. **Confirm each post** as you go:
+   `POST /api/outbox/{packageId}/{platform}/confirm` with body `{"postUrl":"..."}`
+   (the exact URLs are pre-filled per platform in the package's `manifest.json`).
+   Not posting a variant? `POST /api/outbox/{packageId}/{platform}/skip`
 
 ## Midday (2 minutes)
 
 - Check Skool community for new posts / questions
 - Reply to any direct messages in Skool DMs
-- The DailyPostJob at 09:00 UTC has already published 3 posts — verify by `GET /api/providers/status` or the platform apps
+- `GET /api/outbox?status=exported` — anything still listed hasn't been posted/confirmed yet
 
 ## Evening (5 minutes)
 
 - **Review `/api/monetization/summary`** → see if revenue moved
 - If the top campaign in `byCampaign` is showing €0 joins but >50 clicks → check the Skool link, the Linktree UTM, or the Skool webhook config
-- Tap **Dry-run a hook** to preview tomorrow's planned posts
+- `GET /api/iris/queue` → glance at what's queued for tomorrow's package
 
 ## Weekly (15 minutes, every Sunday)
 
@@ -29,22 +42,25 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 - **Re-weight pillars** in `pillars.json` based on what converted
 - **Bump low-performing hooks' score** to 30, or remove from `hooks.json` if dead
 - **Update Linktree link order** based on top-converting destination
-- **Re-verify tokens** are all still `valid`
+- **Clean old packages** out of the Drive folder if it's getting cluttered (SQLite keeps the record)
 
-## Emergency: token expired
+## Emergency: package didn't export to Drive
 
-| Provider | Symptom | Fix |
-|---|---|---|
-| Meta | `OAuthException 190` in logs | Tap re-auth shortcut, complete flow |
-| TikTok | `invalid_token` in logs | Tap re-auth shortcut, complete flow |
-| YouTube | `401 Unauthorized` from YouTube | Tap re-auth shortcut, complete flow |
+1. Check `data/iris.log` for `Outbox export failed`
+2. The package is safe: its items stay `Pending` in SQLite and the files stay at
+   `output/outbox/<date>/<packageId>/` — you can post directly from there
+3. Common causes: service-account key path wrong (`Outbox:GoogleDrive:ServiceAccountJsonPath`),
+   Drive folder not shared with the service-account email, folder id wrong
+4. Once fixed: `POST /api/outbox/{packageId}/export` re-exports it immediately
+   (find the id via `GET /api/outbox?status=pending`). Or just wait — every daily
+   run retries pending exports before building anything new
 
 ## Emergency: pipeline crashed
 
 1. `GET /healthz` returns connection error
 2. Open Codespaces in phone browser → `cd src && dotnet run`
 3. Check `data/iris.log` for the last error
-4. Restart. DailyPostJob will re-enqueue top 3 hooks automatically
+4. Restart. The DailyOutboxJob auto-curates top hooks when the queue is empty — nothing is lost
 
 ## Emergency: Codespaces idle-killed
 
@@ -56,15 +72,20 @@ The Tasker heartbeat (see README §10) prevents this, but if it does happen:
 
 ## Common questions
 
-**Q: A post has no image and `ContentRenderer` is throwing. Why?**
+**Q: `ContentRenderer` is throwing when building the package. Why?**
 A: `RenderImageAsync` needs a system font. On Codespaces, the `dotnet/runtime` base image has DejaVu. Verify with `fc-list | grep DejaVu`. If missing: `sudo apt-get install -y fonts-dejavu-core`.
 
-**Q: Why are TikTok posts `SELF_ONLY`?**
-A: Safe default for testing. Edit `TikTokProvider.PublishVideoAsync`, change `privacy_level` from `SELF_ONLY` to `PUBLIC` after you've confirmed end-to-end works.
+**Q: TikTok/YouTube folders only contain `media.png`, no video?**
+A: The mp4 render needs `ffmpeg` (`sudo apt-get install -y ffmpeg`). The package builder falls back to the still image so the day is never lost — post the image, or reinstall ffmpeg and `POST /api/outbox/build` again.
 
-**Q: YouTube uploads are failing. Why?**
-A: Default privacy is `unlisted`. If you want public, edit `YouTubeProvider.UploadVideoAsync`, change `"unlisted"` to `"public"`. Also check daily upload quota (10,000 units; 1 short = ~100 units, 1 long = 1600).
+**Q: I posted but forgot which confirm URL to hit.**
+A: Open `manifest.json` in the package — every platform entry has its exact `confirmEndpoint`. Or `GET /api/outbox?status=exported` to list what's still unconfirmed.
 
 **Q: How do I know which hook is making money?**
-A: `GET /api/monetization/conversions?limit=200`, look at the `utm_campaign` column. The hook with the highest `revenue_eur` sum is your top earner.
+A: `GET /api/monetization/conversions?limit=200`, look at the `utm_campaign` column. The hook with the highest `revenue_eur` sum is your top earner. This works exactly as before the pivot — the UTM link travels inside the caption you paste.
 
+**Q: Which platform actually converts?**
+A: `GET /api/monetization/summary` → `byPlatform` (joins, clicks, revenue per platform, best first). Each variant's caption link is stamped `utm_source=<platform>`, so as long as you paste captions without editing the link, joins attribute to the right platform automatically.
+
+**Q: Can I re-enable automated posting?**
+A: Set `Features:AutoPublish` to `true` in `appsettings.json` and restart — the provider adapters, OAuth endpoints, and DailyPostJob all come back. Only do this if the platform apps are verified; see the warning in the README.

@@ -1,22 +1,30 @@
-# The Inner Shift Lab — IRIS Broadcast Pipeline
+# The Inner Shift Lab — IRIS Headless Content Factory
 
-End-to-end C# pipeline that automates content broadcast to **Instagram, Facebook, TikTok, YouTube**, scored and queued by the **IRIS Method engine** (Identify / Reprogram / Integrate / Stabilise), driving traffic to your Linktree → Skool funnel.
+Headless C# content factory for **Instagram, Facebook, TikTok, YouTube**, scored and curated by the **IRIS Method engine** (Identify / Reprogram / Integrate / Stabilise), driving traffic to your Linktree → Skool funnel — with a **human-in-the-loop outbox** instead of automated API posting.
 
-**Stack**: ASP.NET Core 8 · Quartz scheduler · SQLite (zero-budget) · ImageSharp + QuestPDF + FFmpeg (Canva-replacement) · Termux on Android for ops · GitHub Codespaces for compute.
+**Stack**: ASP.NET Core 8 · Quartz scheduler · SQLite (zero-budget) · ImageSharp + QuestPDF + FFmpeg (Canva-replacement) · Google Drive pickup · Termux on Android for ops · GitHub Codespaces for compute.
+
+> **⚠️ Strategic pivot (2026-07): automated cross-posting is retired.** Unattended
+> API posting through unverified apps risks platform flagging/account bans, and
+> storing long-lived social OAuth tokens adds EU GDPR/cybersecurity surface. IRIS
+> now renders one platform-formatted package per day into an **outbox** (SQLite +
+> Google Drive) and the operator posts manually from the phone. The provider code
+> still exists, quarantined behind `Features:AutoPublish` (default `false`).
+> **Read [docs/headless-outbox.md](docs/headless-outbox.md) for the full workflow.**
 
 ---
 
 ## 0. The mission
 
-> **Reach automated monetization within 1 week.**
+> **Reach monetization within 1 week — one curated, correctly-formatted package per day, posted by hand in minutes.**
 
-The pipeline is purpose-built for this:
+The factory is purpose-built for this:
 - 30 high-converting IRIS hooks pre-loaded (sourced from your project bible)
-- Auto-curation: top 3 hooks per day, scored by pillar fit + platform fit + time fit + conversion potential
-- Auto-media: if a post has no image, `ContentRenderer` generates a 1080×1080 PNG (Canva-replacement, $0)
-- Auto-video: for TikTok/YouTube, ImageSharp still → ffmpeg → mp4
-- Auto-UTM: every caption gets `?utm_campaign={hook_id}&utm_content={pillar}&ref={post_uuid}` so revenue per hook is tracked
-- 14-day launch playbook wired into the scheduler
+- Auto-curation: top hooks scored by pillar fit + platform fit + time fit + conversion potential
+- Daily outbox package: one variant per platform — correct dimensions, caption limits, hashtag counts — media + caption text + `manifest.json`, exported to Google Drive
+- Auto-media: `ContentRenderer` generates the PNG per platform ($0); TikTok/YouTube get ImageSharp still → ffmpeg → mp4
+- Auto-UTM: every caption embeds `?utm_campaign={hook_id}&utm_content={pillar}` so revenue per hook is tracked even though posting is manual
+- Operator confirms each post via one endpoint; monetization tracking is unchanged
 
 ---
 
@@ -57,11 +65,23 @@ Codespaces auto-forwards port 5000. Open the **Ports** tab → port 5000 → "Op
 ### 1.6 Health check
 - `GET /healthz` → `{"status":"ok",...}`
 - `GET /readyz` → 200 if DB is reachable
-- `GET /api/providers/status` → token status for each platform
+- `GET /api/outbox` → today's package status (Pending/Exported/Posted)
+
+### 1.7 Google Drive pickup (recommended)
+Follow [docs/headless-outbox.md](docs/headless-outbox.md) → *Google Drive setup* to
+wire the service-account export. Without it, packages land in `output/outbox/`.
 
 ---
 
-## 2. Meta OAuth (the part that was missing)
+## 2–4. Platform OAuth — QUARANTINED (kept for reference)
+
+> **The three sections below describe the retired auto-publish pipeline.** None of
+> these endpoints exist unless `Features:AutoPublish` is `true` in
+> `appsettings.json`. You do NOT need any platform app, OAuth flow, or token to run
+> the outbox workflow — that's the point. Kept because the code is kept, and in
+> case the apps ever get verified.
+
+## 2. Meta OAuth (quarantined)
 
 ### 2.1 Create a Meta App
 1. Go to `developers.facebook.com` (use phone browser)
@@ -94,7 +114,7 @@ Verify token: any string (use the `MetaAppSecret` value from `appsettings.json`)
 
 ---
 
-## 3. TikTok OAuth
+## 3. TikTok OAuth (quarantined)
 
 ### 3.1 Create a TikTok dev app
 1. `developers.tiktok.com` → **Manage apps** → **Create app**
@@ -111,7 +131,7 @@ Default is `SELF_ONLY` (safe testing). Change to `PUBLIC` in `TikTokProvider.Pub
 
 ---
 
-## 4. YouTube OAuth
+## 4. YouTube OAuth (quarantined)
 
 ### 4.1 Create a Google Cloud project
 1. `console.cloud.google.com` → **New project** → name it `inner-shift-lab`
@@ -165,13 +185,20 @@ All available as HTTP endpoints. Add them as Android home screen shortcuts for f
 | `GET /healthz` | Liveness |
 | `GET /readyz` | Readiness (DB ok) |
 | `GET /api/iris/hooks` | List all 30 IRIS hooks |
-| `GET /api/iris/queue` | Show queued posts |
+| `GET /api/iris/queue` | Show queued slots |
 | `POST /api/iris/enqueue` body: `{"hookId":"...","pillar":"...","platforms":[...]}` | Add to queue |
-| `POST /api/op/dry-run` body: `{"hookId":"..."}` | Preview a post (no publish) |
-| `POST /api/providers/{platform}/publish` | Manual publish (IG/FB/TikTok/YouTube) |
-| `GET /api/providers/status` | Token status per platform |
+| `GET /api/outbox` | Outbox items (`?status=exported` to see what's waiting) |
+| `GET /api/outbox/{packageId}` | One package's platform variants |
+| `POST /api/outbox/build` | Build + export the next `Outbox:PackagesPerRun` packages now |
+| `POST /api/outbox/{packageId}/export` | Retry a failed Drive export (also swept every 15 min) |
+| `POST /api/outbox/{packageId}/{platform}/confirm` | Confirm a manual post (body optional: `{"postUrl":"..."}`) |
+| `POST /api/outbox/{packageId}/{platform}/skip` | Mark a variant as deliberately not posted |
 | `GET /api/monetization/summary` | Revenue + join stats |
 | `GET /api/monetization/conversions` | Recent conversion events |
+
+Quarantined (only with `Features:AutoPublish=true`): `POST /api/op/dry-run`,
+`POST /api/providers/{platform}/publish`, `GET /api/providers/status`, `/auth/*`,
+`POST /api/creator/publish`.
 
 ---
 
@@ -183,7 +210,7 @@ Every hour the engine scores each hook against:
 - **Time fit** (proximity to scheduled posting slot)
 - **Conversion potential** (the hook's own `score`, 0-100)
 
-The top-3 hooks are auto-enqueued at 09:00 UTC daily. Customize `pillars.json` to reweight.
+When the queue is empty, the top-scored hooks are auto-curated at 09:00 UTC daily and the best one becomes the day's outbox package (the rest stay queued for following days). Customize `pillars.json` to reweight.
 
 ---
 
@@ -200,7 +227,7 @@ The top-3 hooks are auto-enqueued at 09:00 UTC daily. Customize `pillars.json` t
 | 7 | Last call for challenge + 15-min IG Live |
 | 8–14 | Challenge runs inside Skool · daily post · document breakthroughs |
 
-The DailyPostJob at 09:00 UTC publishes 3 hooks per day. For day-specific content, edit the hook `score` field in `hooks.json` (higher = picked first).
+The DailyOutboxJob at 09:00 UTC packages the day's top hook(s) for all platforms (`Outbox:PackagesPerRun`, default 1); you post them from the Drive folder. For day-specific content, edit the hook `score` field in `hooks.json` (higher = picked first).
 
 ---
 
@@ -252,12 +279,10 @@ Create Android home screen shortcuts for these endpoints (use **HTTP Shortcuts**
 
 1. **Healthcheck** → `GET /healthz`
 2. **Queue status** → `GET /api/iris/queue`
-3. **Provider status** → `GET /api/providers/status`
-4. **Today's conversions** → `GET /api/monetization/conversions?limit=10`
-5. **Dry-run a hook** → `POST /api/op/dry-run`
-6. **Re-auth Meta** → `GET /auth/meta/login`
-7. **Re-auth TikTok** → `GET /auth/tiktok/login`
-8. **Re-auth YouTube** → `GET /auth/youtube/login`
+3. **Outbox status** → `GET /api/outbox?status=exported`
+4. **Build today's package** → `POST /api/outbox/build`
+5. **Today's conversions** → `GET /api/monetization/conversions?limit=10`
+6. **Google Drive** → open the shared `IRIS Outbox` folder (grab media + captions)
 
 ---
 
@@ -269,8 +294,9 @@ inner-shift-lab/
 ├── hooks.json                # 30 IRIS hooks
 ├── pillars.json              # pillar weights
 ├── docs/
-│   ├── deploy-phone.md       # you are here
-│   ├── meta-oauth-flow.md
+│   ├── headless-outbox.md    # the outbox workflow (start here)
+│   ├── deploy-phone.md
+│   ├── meta-oauth-flow.md    # quarantined pipeline reference
 │   ├── api-replacement-canva.md
 │   └── runbook.md
 └── src/
@@ -278,13 +304,20 @@ inner-shift-lab/
     ├── Program.cs
     ├── InnerShiftLab.Core/
     │   ├── CoreModels.cs
+    │   ├── OutboxModels.cs
     │   └── SqliteRepository.cs
     ├── InnerShiftLab.Engine/
     │   ├── IrisEngine.cs
     │   └── ContentRenderer.cs
-    ├── InnerShiftLab.Auth/
+    ├── InnerShiftLab.Outbox/           # human-in-the-loop outbox
+    │   ├── PlatformFormatter.cs        #   per-platform dims/captions/hashtags
+    │   ├── OutboxPackageBuilder.cs     #   media + captions + manifest.json
+    │   ├── PackageExporters.cs         #   Google Drive (service acct) / local
+    │   ├── OutboxService.cs            #   daily cycle + confirm
+    │   └── OutboxSettings.cs
+    ├── InnerShiftLab.Auth/             # QUARANTINED (Features:AutoPublish)
     │   └── Auth.cs
-    ├── InnerShiftLab.Providers/
+    ├── InnerShiftLab.Providers/        # QUARANTINED (Features:AutoPublish)
     │   ├── MetaProvider.cs
     │   ├── TikTokProvider.cs
     │   ├── YouTubeProvider.cs
@@ -299,8 +332,8 @@ inner-shift-lab/
 
 ## 13. First-7-days revenue checklist
 
-- [ ] Day 1: Deploy to Codespaces, all 3 auths (Meta, TikTok, YouTube) wired
-- [ ] Day 2: First 3 auto-posts land, links go live
+- [ ] Day 1: Deploy to Codespaces, Google Drive pickup folder wired
+- [ ] Day 2: First outbox package posted manually to all 4 platforms, links go live
 - [ ] Day 3: Linktree has UTMs working, first clicks tracked
 - [ ] Day 4: First Skool free signups
 - [ ] Day 5: First 5-DM sequence triggers fire
@@ -309,5 +342,5 @@ inner-shift-lab/
 
 ---
 
-Last updated: 2026-06-23 · IRIS Pipeline v1.0
+Last updated: 2026-07-15 · IRIS Headless Content Factory v2.0
 

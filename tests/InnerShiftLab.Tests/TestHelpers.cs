@@ -37,6 +37,9 @@ public sealed class FakeRepository : IRepository
         return Task.CompletedTask;
     }
 
+    public Task<PostSlot?> GetPostAsync(string slotId)
+        => Task.FromResult(Posts.FirstOrDefault(p => p.SlotId == slotId));
+
     public Task<IReadOnlyList<PostSlot>> GetPendingPostsAsync()
         => Task.FromResult<IReadOnlyList<PostSlot>>(
             Posts.Where(p => p.Status is PostStatus.Queued or PostStatus.Publishing).ToList());
@@ -53,4 +56,63 @@ public sealed class FakeRepository : IRepository
     public Task<IReadOnlyList<Conversion>> GetConversionsAsync(int limit)
         => Task.FromResult<IReadOnlyList<Conversion>>(
             Conversions.AsEnumerable().Reverse().Take(limit).ToList());
+
+    public readonly List<OutboxItem> Outbox = new();
+
+    public Task SaveOutboxItemAsync(OutboxItem item)
+    {
+        // Mirror the SQLite upsert guard: terminal states never regress.
+        var existing = Outbox.FirstOrDefault(o => o.PackageId == item.PackageId && o.Platform == item.Platform);
+        if (existing != null && existing.Status is OutboxStatus.Posted or OutboxStatus.Skipped)
+        {
+            item.Status = existing.Status;
+            item.PostedAt ??= existing.PostedAt;
+            item.PostUrl ??= existing.PostUrl;
+        }
+        Outbox.RemoveAll(o => o.PackageId == item.PackageId && o.Platform == item.Platform);
+        Outbox.Add(item);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<OutboxItem>> GetOutboxItemsAsync(OutboxStatus? status = null, int limit = 100)
+        => Task.FromResult<IReadOnlyList<OutboxItem>>(
+            Outbox.Where(o => status == null || o.Status == status).Take(limit).ToList());
+
+    public Task<IReadOnlyList<OutboxItem>> GetOutboxPackageAsync(string packageId)
+        => Task.FromResult<IReadOnlyList<OutboxItem>>(
+            Outbox.Where(o => o.PackageId == packageId).ToList());
+
+    public Task<IReadOnlyList<string>> GetUnexportedPackageIdsAsync(int limit = 20)
+        => Task.FromResult<IReadOnlyList<string>>(
+            Outbox.Where(o => o.Status == OutboxStatus.Pending)
+                .OrderBy(o => o.CreatedAt)
+                .Select(o => o.PackageId)
+                .Distinct()
+                .Take(limit)
+                .ToList());
+
+    public Task<int> MarkOutboxExportedAsync(string packageId, string exportRef)
+    {
+        var pending = Outbox.Where(o => o.PackageId == packageId && o.Status == OutboxStatus.Pending).ToList();
+        foreach (var o in pending) { o.Status = OutboxStatus.Exported; o.ExportRef = exportRef; }
+        return Task.FromResult(pending.Count);
+    }
+
+    public Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl)
+    {
+        var item = Outbox.FirstOrDefault(o => o.PackageId == packageId && o.Platform == platform);
+        if (item == null || item.Status == OutboxStatus.Skipped) return Task.FromResult(false);
+        item.Status = OutboxStatus.Posted;
+        item.PostedAt = DateTimeOffset.UtcNow;
+        item.PostUrl = postUrl;
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> MarkOutboxSkippedAsync(string packageId, string platform)
+    {
+        var item = Outbox.FirstOrDefault(o => o.PackageId == packageId && o.Platform == platform);
+        if (item == null || item.Status == OutboxStatus.Posted) return Task.FromResult(false);
+        item.Status = OutboxStatus.Skipped;
+        return Task.FromResult(true);
+    }
 }
