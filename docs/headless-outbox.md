@@ -65,8 +65,10 @@ Every day at **09:00 UTC** the `DailyOutboxJob` runs (or trigger it any time wit
    `Pending → Exported → Posted` (or `Skipped`). The package directory is stored on
    each row so a retry export needs no re-render.
 4. **Export the package** — media + `caption.txt` (or `title.txt` + `description.txt`
-   for YouTube) + `manifest.json` — to Google Drive for phone pickup. If Drive isn't
-   configured, the package stays under `output/outbox/<date>/<packageId>/`.
+   for YouTube) + `link.txt` (IG/TikTok) + `manifest.json` — for phone pickup. The
+   default exporter **pushes it to the `outbox` branch of this repo** (see
+   *Delivery* below); the package also always stays under
+   `output/outbox/<date>/<packageId>/`.
 5. **Operator posts manually** on each platform (copy caption, upload media), then
    confirms each one:
 
@@ -89,8 +91,8 @@ output/outbox/2026-07-15/<packageId>/
 └── youtube/    title.txt · description.txt · media.mp4 (media.png fallback)
 ```
 
-The same tree is mirrored to the Drive folder (recursively, any depth), one
-subfolder per platform.
+The same tree is delivered to the operator's phone by the configured exporter
+(git branch by default — see *Delivery* below).
 
 ## AI creator content in the outbox
 
@@ -106,38 +108,83 @@ ElevenLabs credits and needs those keys in `ContentCreator` settings. Any
 pipeline failure logs a warning and falls back to text-card rendering — an
 external API outage never sinks the daily run.
 
-## Google Drive setup (service account — no user OAuth)
+## Delivery
 
-Deliberately uses a **service-account key**, not a user OAuth flow, so no personal
-long-lived tokens are stored anywhere:
+The exporter is chosen by precedence: **Git** (default) → **Google Drive**
+(Workspace only) → **Local** (no-op). The active one is named in the startup log.
+If a delivery fails, items stay `Pending`, the package stays local, and it is
+retried on the next daily run and by the 15-min `ExportRetryJob` — or force it with
+`POST /api/outbox/{packageId}/export`. Nothing is ever lost.
 
-1. In [Google Cloud Console](https://console.cloud.google.com): create (or reuse) a
-   project → **APIs & Services → Enable APIs** → enable **Google Drive API**.
-2. **IAM & Admin → Service Accounts → Create service account** (no roles needed).
-3. Open the account → **Keys → Add key → JSON**. Download the key file and put it
-   somewhere outside the repo (e.g. `~/secrets/iris-drive.json`).
-4. In Google Drive (phone or web): create a folder, e.g. `IRIS Outbox`, and
-   **share it with the service account's email** (`...@...iam.gserviceaccount.com`)
-   as **Editor**. Copy the folder id from its URL (`/folders/<id>`).
-5. Configure:
+### Git branch (default — zero cost, personal account)
 
-   ```json
-   "Outbox": {
-     "GoogleDrive": {
-       "Enabled": true,
-       "ServiceAccountJsonPath": "/home/you/secrets/iris-drive.json",
-       "FolderId": "<the folder id>"
-     }
-   }
-   ```
+`Outbox:Git` pushes each package to an **orphan branch** (`outbox`) of this repo
+using the ambient Codespaces git credentials — no new secret, no cost. The operator
+opens the pickup link in the **GitHub mobile app**.
 
-   `ServiceAccountJsonPath` may be left empty if the standard
-   `GOOGLE_APPLICATION_CREDENTIALS` env var points at the key file.
+- The branch is **force-pushed as a single squashed commit** every export. Git
+  history is deliberately not kept: SQLite is the source of truth, and daily MP4s in
+  permanent history would bloat the repo. Each export mirrors the last
+  `RetentionDays` (default 14) of `output/outbox/`, so it is idempotent and
+  self-healing — exporting today also re-publishes the still-retained earlier days.
+- The `exportRef` is a GitHub tree URL, e.g.
+  `https://github.com/<owner>/<repo>/tree/outbox/2026-07-16/<packageId>`, which opens
+  straight to the package folder in the app.
 
-Each daily package appears as `<date> <hookId>/` inside the shared folder. If an
-export fails, the items stay `Pending`, the package remains available locally, and
-the error is logged — nothing is lost: the next daily run retries it automatically,
-or force it immediately with `POST /api/outbox/{packageId}/export`.
+```json
+"Outbox": {
+  "Git": {
+    "Enabled": true,
+    "Branch": "outbox",
+    "RetentionDays": 14,
+    "Repository": ""      // empty = derive from GITHUB_REPOSITORY / origin remote
+  }
+}
+```
+
+Auth is the ambient credential helper; if `GITHUB_TOKEN` is set it is used only in a
+throwaway push URL and is redacted from every log/exception — it never lands in the
+pushed branch or a persisted `.git/config`. The export runs in a temp directory and
+never touches the app's own working tree.
+
+### Google Drive (Workspace Shared Drive only — NOT personal Google)
+
+> ⚠️ **Drive export requires a paid Google Workspace Shared Drive.** A Google
+> **service account has no storage quota and cannot own files**, so uploading into a
+> folder shared from a personal Gmail account fails immediately with
+> `403 storageQuotaExceeded` ("Service Accounts do not have storage quota. Leverage
+> shared drives, or use OAuth delegation instead"). Only enable this if you have a
+> Workspace plan and a **Shared Drive** (which the org, not the service account,
+> owns). On a free/personal Google account, use git delivery above.
+
+If you do have a Shared Drive, set `Outbox:GoogleDrive:Enabled: true` (and
+`Outbox:Git:Enabled: false`), then:
+
+1. [Google Cloud Console](https://console.cloud.google.com) → enable the **Drive API**.
+2. **IAM & Admin → Service Accounts → Create service account**, then **Keys → Add
+   key → JSON**; store the key outside the repo (e.g. `~/secrets/iris-drive.json`).
+3. Add the service account's email as a **member of the Shared Drive** (Content
+   Manager). Copy the Shared Drive folder id.
+4. Configure `ServiceAccountJsonPath` (or the `GOOGLE_APPLICATION_CREDENTIALS` env
+   var) and `FolderId`. The uploader is already shared-drive aware (`drive.file`
+   scope, `supportsAllDrives`).
+
+## Phone notifications (Termux)
+
+`scripts/termux-outbox-notify.sh` pings your phone when a package is ready so you
+don't have to poll. It requires the **Termux:API** app and `pkg install termux-api jq`.
+
+- Polls `GET /api/outbox?status=Exported` every `INTERVAL` seconds (default 300),
+  grouping variants by package.
+- Fires one Android notification per **new** package; tapping it (or the **Open**
+  button) runs `termux-open-url` on the `exportRef` — the GitHub pickup folder.
+- **First run seeds silently**: it records the currently-exported package ids without
+  notifying, so a fresh install doesn't burst-notify history. It never notifies twice
+  for the same package, and tolerates the Codespace being asleep without exiting.
+- `scripts/termux-boot-start.sh` launches it in the background alongside the
+  heartbeat (log at `~/iris/notify.log`); the heartbeat stays the foreground process.
+
+Tunables: `IRIS_URL`, `INTERVAL`, `STATE_FILE` (default `~/.iris/seen-packages`).
 
 ## Outbox settings (`Outbox` section)
 
@@ -147,9 +194,12 @@ or force it immediately with `POST /api/outbox/{packageId}/export`.
   "PackagesPerRun": 1,        // packages built per daily run (one package = one hook)
   "RenderVideo": true,        // wrap stills into mp4 for TikTok/YouTube when ffmpeg is present
   "UseContentCreator": false, // opt-in AI media pipeline (costs API credits; falls back to text cards)
+  "Git": { "Enabled": true, "Branch": "outbox", "RetentionDays": 14, "Repository": "" },
   "GoogleDrive": { "Enabled": false, "ServiceAccountJsonPath": "", "FolderId": "" }
 }
 ```
+
+Delivery precedence when both are enabled: **Git wins** (a startup warning is logged).
 
 ## Endpoint reference
 
