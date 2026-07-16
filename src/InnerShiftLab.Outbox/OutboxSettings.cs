@@ -42,7 +42,26 @@ public sealed class OutboxSettings
     /// </summary>
     public bool UseContentCreator { get; set; }
 
+    /// <summary>
+    /// Push each package to a branch of this repo for phone pickup via the GitHub app.
+    /// The default delivery mechanism: uses the ambient Codespaces git credentials, so no
+    /// new secret is stored, and unlike a Drive service account it works on a personal
+    /// Google/GitHub account at zero cost.
+    /// </summary>
+    public GitExportSettings Git { get; set; } = new();
+
     public GoogleDriveSettings GoogleDrive { get; set; } = new();
+}
+
+public sealed class GitExportSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Orphan branch the packages are published to. Never merged; not part of the code history.</summary>
+    public string Branch { get; set; } = "outbox";
+    /// <summary>Days of packages kept on the branch. Older ones are dropped on the next export.</summary>
+    public int RetentionDays { get; set; } = 14;
+    /// <summary>owner/repo. Empty = derive from the GITHUB_REPOSITORY env var (set in Codespaces/Actions).</summary>
+    public string Repository { get; set; } = "";
 }
 
 /// <summary>

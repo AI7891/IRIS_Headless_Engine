@@ -33,6 +33,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Expose internal static helpers (e.g. GitOutboxExporter's retention/URL logic) to the test project. -->
+    <InternalsVisibleTo Include="InnerShiftLab.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Data files live at the repo root (one level up from this project). Copy them
          next to the built binary so the app is self-contained wherever it is run. -->
     <None Include="..\hooks.json" CopyToOutputDirectory="PreserveNewest" Link="hooks.json" />

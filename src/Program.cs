@@ -194,12 +194,32 @@ try
         outboxSettings.UseContentCreator ? sp.GetRequiredService<IContentCreationPipeline>() : null,
         AppPaths.OutputDir(appRoot),
         sp.GetRequiredService<ILogger<OutboxPackageBuilder>>()));
-    builder.Services.AddSingleton<IPackageExporter>(sp => outboxSettings.GoogleDrive.Enabled
-        ? new GoogleDrivePackageExporter(
+    // Exporter selection precedence: Git (default, zero-cost, personal-account safe)
+    // → Google Drive (Workspace Shared Drive only) → Local (no-op fallback).
+    if (outboxSettings.Git.Enabled && outboxSettings.GoogleDrive.Enabled)
+        Log.Warning("Outbox: both Git and Google Drive export are enabled; Git wins. " +
+                    "Disable one of Outbox:Git:Enabled / Outbox:GoogleDrive:Enabled to silence this.");
+    var outboxDir = Path.Combine(AppPaths.OutputDir(appRoot), "outbox");
+    if (outboxSettings.Git.Enabled)
+    {
+        Log.Information("Outbox delivery: Git exporter (branch '{Branch}')", outboxSettings.Git.Branch);
+        builder.Services.AddSingleton<IPackageExporter>(sp => new GitOutboxExporter(
+            outboxSettings, outboxDir, appRoot, sp.GetRequiredService<ILogger<GitOutboxExporter>>()));
+    }
+    else if (outboxSettings.GoogleDrive.Enabled)
+    {
+        Log.Information("Outbox delivery: Google Drive exporter");
+        builder.Services.AddSingleton<IPackageExporter>(sp => new GoogleDrivePackageExporter(
             sp.GetRequiredService<IHttpClientFactory>(),
             outboxSettings,
-            sp.GetRequiredService<ILogger<GoogleDrivePackageExporter>>())
-        : new LocalPackageExporter(sp.GetRequiredService<ILogger<LocalPackageExporter>>()));
+            sp.GetRequiredService<ILogger<GoogleDrivePackageExporter>>()));
+    }
+    else
+    {
+        Log.Information("Outbox delivery: Local exporter (packages stay under output/outbox/)");
+        builder.Services.AddSingleton<IPackageExporter>(sp =>
+            new LocalPackageExporter(sp.GetRequiredService<ILogger<LocalPackageExporter>>()));
+    }
     builder.Services.AddSingleton<IOutboxService, OutboxService>();
 
     // Webhook verifier — for Skool join events
