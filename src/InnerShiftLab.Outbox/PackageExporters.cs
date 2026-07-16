@@ -146,8 +146,26 @@ public sealed class GoogleDrivePackageExporter : IPackageExporter
         }
     }
 
+    /// <summary>
+    /// Find-or-create: reuses an existing non-trashed folder with this name under the
+    /// parent, otherwise creates one. Without this, every re-export (retry job, or a
+    /// second run) would spawn a duplicate Drive folder for the same package.
+    /// </summary>
     private static async Task<string> CreateFolderAsync(HttpClient client, string name, string parentId, CancellationToken ct)
     {
+        var escaped = name.Replace("\\", "\\\\").Replace("'", "\\'");
+        var q = Uri.EscapeDataString(
+            $"name='{escaped}' and '{parentId}' in parents and " +
+            "mimeType='application/vnd.google-apps.folder' and trashed=false");
+        using var listResp = await client.GetAsync(
+            $"{FilesEndpoint}?q={q}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id)", ct);
+        if (listResp.IsSuccessStatusCode)
+        {
+            var files = JObject.Parse(await listResp.Content.ReadAsStringAsync(ct))["files"] as JArray;
+            var existing = files?.FirstOrDefault()?.Value<string>("id");
+            if (!string.IsNullOrEmpty(existing)) return existing;
+        }
+
         var body = JsonConvert.SerializeObject(new
         {
             name,
