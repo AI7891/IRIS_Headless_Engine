@@ -69,6 +69,147 @@ public sealed class DailyOutboxJob : IJob
 }
 
 [DisallowConcurrentExecution]
+public sealed class RetentionJob : IJob
+{
+    private readonly IRepository _repo;
+    private readonly IPackageExporter _exporter;
+    private readonly OutboxSettings _settings;
+    private readonly IWebHostEnvironment _env;
+    private readonly ILogger<RetentionJob> _log;
+
+    public RetentionJob(IRepository repo, IPackageExporter exporter, OutboxSettings settings,
+        IWebHostEnvironment env, ILogger<RetentionJob> log)
+    {
+        _repo = repo; _exporter = exporter; _settings = settings; _env = env; _log = log;
+    }
+
+    private sealed record PackageSummary(string PackageId, string PackageDir, string? ExportRef,
+        DateTimeOffset Earliest, bool AllTerminal, bool Pruned);
+
+    public async Task Execute(IJobExecutionContext context)
+    {
+        var r = _settings.Retention;
+        if (!r.Enabled) return;
+        var ct = context.CancellationToken;
+
+        try
+        {
+            var outboxRoot = Path.Combine(AppPaths.OutputDir(AppPaths.ResolveRoot(_env.ContentRootPath)), "outbox");
+            var now = DateTimeOffset.UtcNow;
+            var ageCutoff = now.AddDays(-Math.Max(0, r.KeepDays));
+
+            var summaries = (await _repo.GetOutboxItemsAsync(status: null, limit: 5000))
+                .GroupBy(i => i.PackageId)
+                .Select(g => new PackageSummary(
+                    g.Key,
+                    g.Select(i => i.PackageDir).FirstOrDefault(p => !string.IsNullOrEmpty(p)) ?? "",
+                    g.Select(i => i.ExportRef).FirstOrDefault(e => !string.IsNullOrEmpty(e)),
+                    g.Min(i => i.CreatedAt),
+                    g.All(i => i.Status is OutboxStatus.Posted or OutboxStatus.Skipped),
+                    g.Any(i => i.MediaPruned)))
+                .ToList();
+
+            var prunedIds = new HashSet<string>();
+            var reclaimed = 0L;
+            var skippedUnposted = 0;
+
+            // 1. AGE PASS — abandoned-content cap: prune anything older than KeepDays,
+            //    regardless of posted status.
+            foreach (var s in summaries.Where(s => !s.Pruned && s.Earliest < ageCutoff).OrderBy(s => s.Earliest))
+            {
+                reclaimed += await PrunePackageAsync(s, outboxRoot, ct);
+                prunedIds.Add(s.PackageId);
+            }
+
+            // 2. SIZE PASS — FIFO under MaxTotalMegabytes.
+            if (r.MaxTotalMegabytes > 0)
+            {
+                var capBytes = (long)r.MaxTotalMegabytes * 1024 * 1024;
+                var currentBytes = OutboxRetention.DirectorySizeBytes(outboxRoot);
+                if (currentBytes > capBytes)
+                {
+                    // Candidates the size pass may prune (respecting KeepUnpostedPackages),
+                    // oldest first, excluding anything just pruned by the age pass.
+                    var candidateIds = await _repo.GetPrunablePackageIdsAsync(
+                        keepUnposted: r.KeepUnpostedPackages, olderThanUtc: ageCutoff);
+                    var byId = summaries.ToDictionary(s => s.PackageId);
+                    var oldestFirst = candidateIds
+                        .Where(id => !prunedIds.Contains(id) && byId.ContainsKey(id))
+                        .Select(id => (PackageId: id, Bytes: OutboxRetention.DirectorySizeBytes(byId[id].PackageDir)))
+                        .ToList();
+                    skippedUnposted = summaries.Count(s => !s.Pruned && !prunedIds.Contains(s.PackageId)
+                        && !s.AllTerminal && r.KeepUnpostedPackages && s.Earliest >= ageCutoff);
+
+                    foreach (var id in OutboxRetention.SelectForSizePass(oldestFirst, currentBytes, capBytes))
+                    {
+                        reclaimed += await PrunePackageAsync(byId[id], outboxRoot, ct);
+                        prunedIds.Add(id);
+                    }
+                }
+            }
+
+            var remainingMb = OutboxRetention.DirectorySizeBytes(outboxRoot) / (1024 * 1024);
+            _log.LogInformation(
+                "Retention: pruned {Count} package(s), reclaimed {MB} MB, {Remaining} MB remaining, {Skipped} kept (unposted)",
+                prunedIds.Count, reclaimed / (1024 * 1024), remainingMb, skippedUnposted);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Retention job crashed");
+        }
+    }
+
+    /// <summary>Deletes the local media dir, prunes the remote copy, then flags the rows LAST.</summary>
+    private async Task<long> PrunePackageAsync(PackageSummary s, string outboxRoot, CancellationToken ct)
+    {
+        try
+        {
+            long bytes = 0;
+            if (!string.IsNullOrEmpty(s.PackageDir) && Directory.Exists(s.PackageDir))
+            {
+                // Never delete outside the outbox root, whatever the stored path says.
+                if (!OutboxRetention.IsInsideRoot(outboxRoot, s.PackageDir))
+                {
+                    _log.LogWarning("Retention: refusing to delete {Dir} — outside outbox root {Root}",
+                        s.PackageDir, outboxRoot);
+                    return 0;
+                }
+                bytes = OutboxRetention.DirectorySizeBytes(s.PackageDir);
+                Directory.Delete(s.PackageDir, recursive: true);
+                RemoveEmptyParent(Path.GetDirectoryName(s.PackageDir), outboxRoot);
+            }
+
+            if (!string.IsNullOrEmpty(s.ExportRef))
+                await _exporter.PruneAsync(s.ExportRef, ct);
+
+            // Flag LAST: a crash before here leaves the package prunable again rather
+            // than orphaning a flagged-but-present package.
+            await _repo.MarkOutboxMediaPrunedAsync(s.PackageId);
+            return bytes;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Retention: pruning package {PackageId} failed", s.PackageId);
+            return 0;
+        }
+    }
+
+    private static void RemoveEmptyParent(string? dateDir, string outboxRoot)
+    {
+        try
+        {
+            if (dateDir != null && OutboxRetention.IsInsideRoot(outboxRoot, dateDir)
+                && !string.Equals(Path.GetFullPath(dateDir), Path.GetFullPath(outboxRoot), StringComparison.Ordinal)
+                && Directory.Exists(dateDir) && !Directory.EnumerateFileSystemEntries(dateDir).Any())
+            {
+                Directory.Delete(dateDir);
+            }
+        }
+        catch { /* best effort */ }
+    }
+}
+
+[DisallowConcurrentExecution]
 public sealed class ExportRetryJob : IJob
 {
     private readonly IOutboxService _outbox;

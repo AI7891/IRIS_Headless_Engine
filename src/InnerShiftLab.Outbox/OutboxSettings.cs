@@ -42,7 +42,46 @@ public sealed class OutboxSettings
     /// </summary>
     public bool UseContentCreator { get; set; }
 
+    /// <summary>
+    /// Push each package to a branch of this repo for phone pickup via the GitHub app.
+    /// The default delivery mechanism: uses the ambient Codespaces git credentials, so no
+    /// new secret is stored, and unlike a Drive service account it works on a personal
+    /// Google/GitHub account at zero cost.
+    /// </summary>
+    public GitExportSettings Git { get; set; } = new();
+
     public GoogleDriveSettings GoogleDrive { get; set; } = new();
+
+    /// <summary>FIFO media retention. Rows in the outbox table are always kept (they carry
+    /// attribution); only the rendered media/text files are pruned, oldest first.</summary>
+    public RetentionSettings Retention { get; set; } = new();
+}
+
+public sealed class RetentionSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Hard age cap. Media older than this is pruned even if never posted (abandoned).</summary>
+    public int KeepDays { get; set; } = 30;
+    /// <summary>FIFO size cap on the local outbox root. Oldest eligible packages are pruned until under it. 0 = no size cap.</summary>
+    public int MaxTotalMegabytes { get; set; } = 2048;
+    /// <summary>Keep media for packages not yet posted/skipped, until KeepDays forces the issue.</summary>
+    public bool KeepUnpostedPackages { get; set; } = true;
+}
+
+public sealed class GitExportSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Orphan branch the packages are published to. Never merged; not part of the code history.</summary>
+    public string Branch { get; set; } = "outbox";
+    /// <summary>Days of packages kept on the branch. Older ones are dropped on the next export.</summary>
+    public int RetentionDays { get; set; } = 14;
+    /// <summary>
+    /// owner/repo to push packages to. <b>Strongly recommended: a dedicated private repo</b>,
+    /// e.g. <c>you/IRIS_Outbox</c>. Empty falls back to the source code repo (via
+    /// GITHUB_REPOSITORY / the origin remote), which means every future clone and Codespace
+    /// rebuild downloads the media accumulated on the outbox branch.
+    /// </summary>
+    public string Repository { get; set; } = "";
 }
 
 /// <summary>

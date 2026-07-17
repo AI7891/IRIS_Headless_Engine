@@ -24,9 +24,12 @@ using InnerShiftLab.Monetization;
 using InnerShiftLab.Outbox;
 using InnerShiftLab.Providers;
 using InnerShiftLab.Scheduling;
+using InnerShiftLab.Security;
 using Microsoft.AspNetCore.Http.Json;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Threading.RateLimiting;
 using Quartz;
 using Serilog;
 using System.Text.Json;
@@ -71,13 +74,50 @@ try
         o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     });
 
-    // Swagger/OpenAPI — required by app.UseSwagger()/UseSwaggerUI() below and the "/" landing page.
-    builder.Services.AddEndpointsApiExplorer();
-    builder.Services.AddSwaggerGen();
+    // Don't advertise the server implementation.
+    builder.WebHost.ConfigureKestrel(o => o.AddServerHeader = false);
+
+    // Flood brake (not a fairness system): reject bursts BEFORE any crypto runs.
+    // Behind Codespaces port forwarding many requests may share an IP; acceptable.
+    builder.Services.AddRateLimiter(o =>
+    {
+        o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 120,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                }));
+        // Tighter on the two endpoints that are exempt from the API key.
+        o.AddFixedWindowLimiter("webhook", w =>
+        {
+            w.PermitLimit = 20;
+            w.Window = TimeSpan.FromMinutes(1);
+            w.QueueLimit = 0;
+        });
+    });
 
     // -----------------------------------------------------------------------------
     // 2. Bind strongly-typed config sections (fail fast if missing)
     // -----------------------------------------------------------------------------
+    // Secrets never live in appsettings.json (this repo is public): short env-var
+    // names win over any config value. Written into configuration BEFORE binding so
+    // both the direct .Get<>() reads and the IOptions<> path see them.
+    foreach (var (envVar, configKey) in new[]
+    {
+        ("IRIS_API_KEY", "Security:ApiKey"),
+        ("SKOOL_WEBHOOK_SECRET", "Monetization:SkoolWebhookSecret"),
+        ("META_APP_SECRET", "Monetization:MetaAppSecret"),
+    })
+    {
+        var value = Environment.GetEnvironmentVariable(envVar);
+        if (!string.IsNullOrWhiteSpace(value))
+            builder.Configuration[configKey] = value;
+    }
+
     var irisSection = builder.Configuration.GetSection("Iris");
     builder.Services.Configure<IrisSettings>(irisSection);
 
@@ -105,6 +145,34 @@ try
         ?? throw new InvalidOperationException("Missing [Socials] config section in appsettings.json");
     var monetizationSettings = monetizationSection.Get<MonetizationSettings>()
         ?? throw new InvalidOperationException("Missing [Monetization] config section in appsettings.json");
+
+    static bool IsPlaceholderSecret(string? s) =>
+        string.IsNullOrWhiteSpace(s) || s.Contains("change-me", StringComparison.OrdinalIgnoreCase)
+        || s.Contains("REPLACE_ME", StringComparison.OrdinalIgnoreCase);
+
+    // API key: the one place a hard crash is correct — an app that boots without a
+    // key on a public port is worse than an app that does not boot.
+    var securitySettings = builder.Configuration.GetSection("Security").Get<SecuritySettings>() ?? new SecuritySettings();
+    SecuritySettings.Validate(securitySettings);
+    builder.Services.AddSingleton(securitySettings);
+
+    // Swagger is a complete map of the API. Same structural instinct as the
+    // AutoPublish quarantine: on a deployed (key-required) instance we don't
+    // disable the dangerous thing — we don't build it. Local development only.
+    if (!securitySettings.RequireApiKey)
+    {
+        builder.Services.AddEndpointsApiExplorer();
+        builder.Services.AddSwaggerGen();
+    }
+
+    // Webhook secrets are optional (the webhooks themselves are), so placeholders
+    // warn rather than throw — but say exactly which env var fixes it.
+    if (IsPlaceholderSecret(monetizationSettings.SkoolWebhookSecret))
+        Log.Warning("Monetization:SkoolWebhookSecret is a placeholder — Skool webhook signatures will not verify. " +
+                    "Set the SKOOL_WEBHOOK_SECRET environment variable (Codespaces secret).");
+    if (IsPlaceholderSecret(monetizationSettings.MetaAppSecret))
+        Log.Warning("Monetization:MetaAppSecret is a placeholder — Meta webhook signatures will not verify. " +
+                    "Set the META_APP_SECRET environment variable (Codespaces secret).");
 
     // -----------------------------------------------------------------------------
     // 3. Singletons — engine, providers, repositories, scheduler
@@ -194,12 +262,32 @@ try
         outboxSettings.UseContentCreator ? sp.GetRequiredService<IContentCreationPipeline>() : null,
         AppPaths.OutputDir(appRoot),
         sp.GetRequiredService<ILogger<OutboxPackageBuilder>>()));
-    builder.Services.AddSingleton<IPackageExporter>(sp => outboxSettings.GoogleDrive.Enabled
-        ? new GoogleDrivePackageExporter(
+    // Exporter selection precedence: Git (default, zero-cost, personal-account safe)
+    // → Google Drive (Workspace Shared Drive only) → Local (no-op fallback).
+    if (outboxSettings.Git.Enabled && outboxSettings.GoogleDrive.Enabled)
+        Log.Warning("Outbox: both Git and Google Drive export are enabled; Git wins. " +
+                    "Disable one of Outbox:Git:Enabled / Outbox:GoogleDrive:Enabled to silence this.");
+    var outboxDir = Path.Combine(AppPaths.OutputDir(appRoot), "outbox");
+    if (outboxSettings.Git.Enabled)
+    {
+        Log.Information("Outbox delivery: Git exporter (branch '{Branch}')", outboxSettings.Git.Branch);
+        builder.Services.AddSingleton<IPackageExporter>(sp => new GitOutboxExporter(
+            outboxSettings, outboxDir, appRoot, sp.GetRequiredService<ILogger<GitOutboxExporter>>()));
+    }
+    else if (outboxSettings.GoogleDrive.Enabled)
+    {
+        Log.Information("Outbox delivery: Google Drive exporter");
+        builder.Services.AddSingleton<IPackageExporter>(sp => new GoogleDrivePackageExporter(
             sp.GetRequiredService<IHttpClientFactory>(),
             outboxSettings,
-            sp.GetRequiredService<ILogger<GoogleDrivePackageExporter>>())
-        : new LocalPackageExporter(sp.GetRequiredService<ILogger<LocalPackageExporter>>()));
+            sp.GetRequiredService<ILogger<GoogleDrivePackageExporter>>()));
+    }
+    else
+    {
+        Log.Information("Outbox delivery: Local exporter (packages stay under output/outbox/)");
+        builder.Services.AddSingleton<IPackageExporter>(sp =>
+            new LocalPackageExporter(sp.GetRequiredService<ILogger<LocalPackageExporter>>()));
+    }
     builder.Services.AddSingleton<IOutboxService, OutboxService>();
 
     // Webhook verifier — for Skool join events
@@ -244,6 +332,18 @@ try
             .WithIdentity("webhook-sweep-trigger")
             .WithSimpleSchedule(s => s.WithIntervalInMinutes(5).RepeatForever()));
 
+        // FIFO media retention: 09:30 UTC — 30 min after the daily build so it never
+        // races the day's packages. Prunes only media; outbox rows are always kept.
+        if (outboxSettings.Retention.Enabled)
+        {
+            var retention = JobKey.Create("retention");
+            q.AddJob<RetentionJob>(h => h.WithIdentity(retention).StoreDurably());
+            q.AddTrigger(t => t
+                .ForJob(retention)
+                .WithIdentity("retention-trigger")
+                .WithCronSchedule("0 30 9 * * ?", b => b.InTimeZone(TimeZoneInfo.Utc)));
+        }
+
         if (autoPublish)
         {
             // QUARANTINED: automated publishing + OAuth token refresh. Never
@@ -277,6 +377,43 @@ try
         var repo = scope.ServiceProvider.GetRequiredService<IRepository>();
         await repo.InitAsync();
     }
+
+    // Fail-fast visibility: resolve the git push target now (no push/clone) so
+    // misconfiguration is loud at startup, not a silent 09:00 failure. Never crash —
+    // the API, heartbeat and webhooks must keep serving even if delivery is broken.
+    if (outboxSettings.Git.Enabled &&
+        app.Services.GetRequiredService<IPackageExporter>() is GitOutboxExporter gitExporter)
+    {
+        try
+        {
+            var target = await gitExporter.ValidateTargetAsync();
+            var parts = target.Split('/');
+            var sameRepo = string.IsNullOrWhiteSpace(outboxSettings.Git.Repository)
+                || GitOutboxExporter.IsSameRepo(parts[0], parts[1],
+                    Environment.GetEnvironmentVariable("GITHUB_REPOSITORY"));
+            if (sameRepo)
+                Log.Warning("Outbox git target resolved to the source repo '{Target}' (branch '{Branch}'). " +
+                    "Media on the outbox branch will bloat every clone and Codespace rebuild — set " +
+                    "Outbox:Git:Repository to a dedicated repo (e.g. you/IRIS_Outbox).",
+                    target, outboxSettings.Git.Branch);
+            else
+                Log.Information("Outbox git target: {Target} (branch '{Branch}')", target, outboxSettings.Git.Branch);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Outbox git export target is unresolvable — outbox export will FAIL until " +
+                "Outbox:Git:Repository is set (or GITHUB_REPOSITORY/origin is available). " +
+                "The API, heartbeat and webhooks keep running.");
+        }
+    }
+
+    // Security pipeline — the ordering is the point: headers apply to everything
+    // (including 401s/429s), floods are rejected before any crypto runs, then the
+    // front door. /healthz and /readyz are behind the key too — the heartbeat sends
+    // the header; an anonymous prober learns nothing.
+    app.UseSecurityHeaders();
+    app.UseRateLimiter();
+    app.UseMiddleware<ApiKeyMiddleware>();
 
     app.UseSerilogRequestLogging();
 
@@ -349,6 +486,16 @@ try
             // Package files gone from disk, or Drive misconfigured — tell the operator why.
             return Results.Conflict(new { message = ex.Message });
         }
+    });
+
+    // Run the FIFO media-retention sweep on demand (same job as the 09:30 cron).
+    app.MapPost("/api/outbox/prune-now", async (ISchedulerFactory sf, CancellationToken ct) =>
+    {
+        if (!outboxSettings.Retention.Enabled)
+            return Results.BadRequest(new { message = "Retention is disabled (Outbox:Retention:Enabled=false)." });
+        var scheduler = await sf.GetScheduler(ct);
+        await scheduler.TriggerJob(JobKey.Create("retention"), ct);
+        return Results.Accepted(value: new { triggered = true });
     });
 
     app.MapPost("/api/outbox/{packageId}/{platform}/confirm", async (
@@ -441,7 +588,7 @@ try
             // Meta subscription verification: echo hub.challenge as plain text on success.
             var challenge = w.VerifyMetaChallenge(ctx.Request.Query);
             return challenge != null ? Results.Text(challenge) : Results.StatusCode(403);
-        });
+        }).RequireRateLimiting("webhook");
         app.MapPost("/auth/meta/webhook",  async (
             HttpContext ctx, IWebhookVerifier w, IRepository r) =>
         {
@@ -450,10 +597,11 @@ try
             if (!ok) return Results.Unauthorized();
             await r.RecordWebhookAsync("meta", body);
             return Results.Ok();
-        });
+        }).RequireRateLimiting("webhook");
     }
 
-    // Skool webhook — receives join events, links to UTMs
+    // Skool webhook — receives join events, links to UTMs. Exempt from the API key
+    // (verified by HMAC instead), so it gets the tighter webhook rate limit.
     app.MapPost("/webhook/skool", async (
         HttpContext ctx, IWebhookVerifier w, IMonetizationLogger m) =>
     {
@@ -462,7 +610,7 @@ try
         if (!ok) return Results.Unauthorized();
         await m.LogSkoolJoinAsync(body);
         return Results.Ok();
-    });
+    }).RequireRateLimiting("webhook");
 
     // Content creator endpoints — AI script -> carousel -> voiceover -> composed output
     app.MapPost("/api/creator/script", async (CreatorRequest? req, IScriptGenerator g, CancellationToken ct) =>
@@ -504,9 +652,17 @@ try
         });
     }
 
-    app.MapGet("/", () => Results.Redirect("/swagger"));
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    if (!securitySettings.RequireApiKey)
+    {
+        app.MapGet("/", () => Results.Redirect("/swagger"));
+        app.UseSwagger();
+        app.UseSwaggerUI();
+        Log.Information("Swagger UI exposed at / (local development — RequireApiKey=false)");
+    }
+    else
+    {
+        Log.Information("Swagger not mapped (RequireApiKey=true) — an unmapped endpoint cannot leak");
+    }
 
     Log.Information("IRIS headless content factory starting on {Env} (AutoPublish={AutoPublish})",
         app.Environment.EnvironmentName, autoPublish);

@@ -4,13 +4,19 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 
 ## Morning (10 minutes)
 
-1. **Tap Healthcheck shortcut** → `GET /healthz` should return `{"status":"ok"}`
-2. **Open the Google Drive `IRIS Outbox` folder** → today's package(s) appeared at
-   09:00 UTC as `<date> <hookId>/` (`Outbox:PackagesPerRun` of them, default 1)
-   - Not there? `GET /api/outbox` to check status, or `POST /api/outbox/build` to build now
+1. **Tap the "IRIS: package ready" notification** (from `termux-outbox-notify.sh`) →
+   it opens the package's pickup folder on the `outbox` branch in the **GitHub app**.
+   - No notification? Tap Healthcheck (`GET /healthz` → `{"status":"ok"}`), then
+     `GET /api/outbox?status=Exported` for the pickup links, or `POST /api/outbox/build`
+     to build now. Today's package(s) build at 09:00 UTC (`Outbox:PackagesPerRun`,
+     default 1).
    - Export failed earlier? `POST /api/outbox/{packageId}/export` retries it
-     (the 15-min `ExportRetryJob` also does this automatically)
-3. **Post each platform folder**, one by one:
+     (the 15-min `ExportRetryJob` also does this automatically).
+   - After a Codespace (re)start, confirm the delivery target in the startup log:
+     `Outbox git target: <owner>/<repo> (branch 'outbox')`. A **warning** there means
+     you're pushing to the code repo (set `Outbox:Git:Repository` to a dedicated repo);
+     an **error** means the target is unresolvable and export will fail until fixed.
+2. **Post each platform folder**, one by one:
    - Open `caption.txt` (YouTube: `description.txt`), copy all → platform app → paste
    - Attach `media.png` (IG/FB) or `media.mp4` (TikTok/YouTube)
    - YouTube uses `title.txt` as the video title and `description.txt` as the description
@@ -19,7 +25,7 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
      the folder for the bare URL — copy it into your bio/Linktree so those joins keep
      their hook + platform attribution
    - **Don't edit the link** — it carries the UTM attribution (`utm_source=<platform>`)
-4. **Confirm each post** as you go:
+3. **Confirm each post** as you go:
    `POST /api/outbox/{packageId}/{platform}/confirm` with body `{"postUrl":"..."}`
    (the exact URLs are pre-filled per platform in the package's `manifest.json`).
    Not posting a variant? `POST /api/outbox/{packageId}/{platform}/skip`
@@ -42,18 +48,27 @@ This is the day-to-day playbook. Designed to be done entirely from an Android ph
 - **Re-weight pillars** in `pillars.json` based on what converted
 - **Bump low-performing hooks' score** to 30, or remove from `hooks.json` if dead
 - **Update Linktree link order** based on top-converting destination
-- **Clean old packages** out of the Drive folder if it's getting cluttered (SQLite keeps the record)
+- Old packages age off the `outbox` branch automatically (`RetentionDays`, default 14); SQLite keeps the full record
+- Media retention runs daily at 09:30 UTC; its summary log reads
+  `Retention: pruned N package(s), reclaimed X MB, Y MB remaining, Z kept (unposted)`.
+  Only media is pruned — outbox rows (caption, exportRef, posted state) always stay.
+  Force it with `POST /api/outbox/prune-now`
 
-## Emergency: package didn't export to Drive
+## Emergency: package didn't get delivered
 
-1. Check `data/iris.log` for `Outbox export failed`
+1. Check `data/iris.log` for `Outbox export failed` (and which exporter is active,
+   named at startup as `Outbox delivery: ...`)
 2. The package is safe: its items stay `Pending` in SQLite and the files stay at
    `output/outbox/<date>/<packageId>/` — you can post directly from there
-3. Common causes: service-account key path wrong (`Outbox:GoogleDrive:ServiceAccountJsonPath`),
-   Drive folder not shared with the service-account email, folder id wrong
+3. Common causes:
+   - **Git delivery**: repo not resolvable → set `Outbox:Git:Repository` to `owner/repo`;
+     push rejected → the Codespace git credentials expired (reopen it)
+   - **Drive delivery**: `403 storageQuotaExceeded` means you're on a personal Google
+     account — Drive needs a paid Workspace **Shared Drive**; switch to git delivery
+     (`Outbox:Git:Enabled: true`)
 4. Once fixed: `POST /api/outbox/{packageId}/export` re-exports it immediately
-   (find the id via `GET /api/outbox?status=pending`). Or just wait — every daily
-   run retries pending exports before building anything new
+   (find the id via `GET /api/outbox?status=Pending`). Or just wait — every daily
+   run and the 15-min `ExportRetryJob` retry pending exports
 
 ## Emergency: pipeline crashed
 

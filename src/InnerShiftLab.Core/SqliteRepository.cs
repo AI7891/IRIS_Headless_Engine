@@ -38,6 +38,10 @@ public interface IRepository
     Task<int> MarkOutboxExportedAsync(string packageId, string exportRef);
     Task<bool> MarkOutboxPostedAsync(string packageId, string platform, string? postUrl);
     Task<bool> MarkOutboxSkippedAsync(string packageId, string platform);
+
+    // Retention — FIFO media pruning (rows are kept; only media_pruned flips)
+    Task<int> MarkOutboxMediaPrunedAsync(string packageId);
+    Task<IReadOnlyList<string>> GetPrunablePackageIdsAsync(bool keepUnposted, DateTimeOffset olderThanUtc, int limit = 500);
 }
 
 public sealed class SqliteRepository : IRepository, IAsyncDisposable
@@ -115,6 +119,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     created     TEXT,
     posted_at   TEXT,
     post_url    TEXT,
+    media_pruned INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (package_id, platform)
 );
 ";
@@ -122,6 +127,7 @@ CREATE TABLE IF NOT EXISTS outbox (
 
         // Defensive migrations for databases created before a column existed.
         await EnsureColumnAsync(conn, "outbox", "package_dir", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(conn, "outbox", "media_pruned", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(conn, "conversions", "utm_source", "TEXT NOT NULL DEFAULT ''");
 
         _initialized = true;
@@ -442,8 +448,47 @@ CREATE TABLE IF NOT EXISTS outbox (
         return await cmd.ExecuteNonQueryAsync() > 0;
     }
 
+    public async Task<int> MarkOutboxMediaPrunedAsync(string packageId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        // Flag only — media_path/caption/export_ref/status are the record and stay.
+        cmd.CommandText = "UPDATE outbox SET media_pruned=1 WHERE package_id=$pk";
+        cmd.Parameters.AddWithValue("$pk", packageId);
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<IReadOnlyList<string>> GetPrunablePackageIdsAsync(bool keepUnposted, DateTimeOffset olderThanUtc, int limit = 500)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        // A package is prunable when its media isn't already pruned AND either:
+        //  (a) every item is terminal (Posted/Skipped), or
+        //  (b) keepUnposted is false, or
+        //  (c) it is older than the age cutoff (abandoned — prunable regardless of status).
+        // Oldest first (FIFO) by the package's earliest created timestamp.
+        cmd.CommandText = @"
+SELECT package_id
+FROM outbox
+GROUP BY package_id
+HAVING MAX(media_pruned) = 0
+   AND ( SUM(CASE WHEN status NOT IN ('Posted','Skipped') THEN 1 ELSE 0 END) = 0
+         OR $keepUnposted = 0
+         OR MIN(created) < $cutoff )
+ORDER BY MIN(created) ASC
+LIMIT $l";
+        cmd.Parameters.AddWithValue("$keepUnposted", keepUnposted ? 1 : 0);
+        cmd.Parameters.AddWithValue("$cutoff", olderThanUtc.ToString("O"));
+        cmd.Parameters.AddWithValue("$l", limit);
+        var list = new List<string>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            list.Add(r.GetString(0));
+        return list;
+    }
+
     private const string OutboxColumns =
-        "package_id, platform, hook_id, pillar, caption, title, media_path, package_dir, width, height, status, export_ref, created, posted_at, post_url";
+        "package_id, platform, hook_id, pillar, caption, title, media_path, package_dir, width, height, status, export_ref, created, posted_at, post_url, media_pruned";
 
     private static async Task<IReadOnlyList<OutboxItem>> ReadOutboxItemsAsync(SqliteCommand cmd)
     {
@@ -468,6 +513,7 @@ CREATE TABLE IF NOT EXISTS outbox (
                 CreatedAt = DateTimeOffset.TryParse(r.IsDBNull(12) ? null : r.GetString(12), out var cr) ? cr : DateTimeOffset.UtcNow,
                 PostedAt = DateTimeOffset.TryParse(r.IsDBNull(13) ? null : r.GetString(13), out var po) ? po : (DateTimeOffset?)null,
                 PostUrl = r.IsDBNull(14) ? null : r.GetString(14),
+                MediaPruned = !r.IsDBNull(15) && r.GetInt32(15) != 0,
             });
         }
         return list;

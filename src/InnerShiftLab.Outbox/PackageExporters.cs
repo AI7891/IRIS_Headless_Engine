@@ -16,6 +16,12 @@ public interface IPackageExporter
 {
     /// <summary>Exports the package and returns a reference the operator can open (Drive folder URL or local path).</summary>
     Task<string> ExportAsync(OutboxPackage package, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the delivered copy of a package during FIFO retention. No-op where delivery
+    /// is a mirror of the local tree (git) or is the local tree itself.
+    /// </summary>
+    Task PruneAsync(string exportRef, CancellationToken ct = default) => Task.CompletedTask;
 }
 
 /// <summary>No-op exporter: the package already lives under output/outbox/.</summary>
@@ -26,9 +32,11 @@ public sealed class LocalPackageExporter : IPackageExporter
 
     public Task<string> ExportAsync(OutboxPackage package, CancellationToken ct = default)
     {
-        _log.LogInformation("Google Drive export not configured; package stays at {Dir}", package.PackageDir);
+        _log.LogInformation("Remote export not configured; package stays at {Dir}", package.PackageDir);
         return Task.FromResult(package.PackageDir);
     }
+
+    // PruneAsync: default no-op — the retention job deletes the local tree directly.
 }
 
 /// <summary>
@@ -82,6 +90,50 @@ public sealed class GoogleDrivePackageExporter : IPackageExporter
         return url;
     }
 
+    public async Task PruneAsync(string exportRef, CancellationToken ct = default)
+    {
+        var folderId = ExtractFolderId(exportRef);
+        if (folderId == null)
+        {
+            _log.LogDebug("Drive prune: '{Ref}' is not a Drive folder URL; nothing to delete", exportRef);
+            return;
+        }
+        try
+        {
+            var drive = _settings.GoogleDrive;
+            var keyPath = string.IsNullOrWhiteSpace(drive.ServiceAccountJsonPath)
+                ? Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS")
+                : drive.ServiceAccountJsonPath;
+            if (string.IsNullOrWhiteSpace(keyPath) || !File.Exists(keyPath)) return;
+
+            var credential = GoogleCredential.FromFile(keyPath).CreateScoped(DriveScope);
+            var token = await ((ITokenAccess)credential).GetAccessTokenForRequestAsync(cancellationToken: ct);
+            using var client = _httpFactory.CreateClient("gdrive");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            using var resp = await client.DeleteAsync(
+                $"{FilesEndpoint}/{folderId}?supportsAllDrives=true", ct);
+            if (resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                _log.LogInformation("Drive prune: deleted folder {Folder}", folderId);
+            else
+                _log.LogWarning("Drive prune: delete of {Folder} returned {Status}", folderId, (int)resp.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            // A Drive hiccup must not break the retention sweep.
+            _log.LogWarning(ex, "Drive prune of {Folder} failed", folderId);
+        }
+    }
+
+    /// <summary>Parses the folder id out of a Drive folder URL; null for a git/local exportRef.</summary>
+    internal static string? ExtractFolderId(string exportRef)
+    {
+        if (string.IsNullOrWhiteSpace(exportRef)) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(
+            exportRef, @"drive\.google\.com/drive/folders/([^/?#]+)");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
     /// <summary>Mirrors a local directory tree (any depth) into a Drive folder.</summary>
     private async Task UploadDirectoryAsync(HttpClient client, string dir, string parentId, CancellationToken ct)
     {
@@ -94,8 +146,26 @@ public sealed class GoogleDrivePackageExporter : IPackageExporter
         }
     }
 
+    /// <summary>
+    /// Find-or-create: reuses an existing non-trashed folder with this name under the
+    /// parent, otherwise creates one. Without this, every re-export (retry job, or a
+    /// second run) would spawn a duplicate Drive folder for the same package.
+    /// </summary>
     private static async Task<string> CreateFolderAsync(HttpClient client, string name, string parentId, CancellationToken ct)
     {
+        var escaped = name.Replace("\\", "\\\\").Replace("'", "\\'");
+        var q = Uri.EscapeDataString(
+            $"name='{escaped}' and '{parentId}' in parents and " +
+            "mimeType='application/vnd.google-apps.folder' and trashed=false");
+        using var listResp = await client.GetAsync(
+            $"{FilesEndpoint}?q={q}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id)", ct);
+        if (listResp.IsSuccessStatusCode)
+        {
+            var files = JObject.Parse(await listResp.Content.ReadAsStringAsync(ct))["files"] as JArray;
+            var existing = files?.FirstOrDefault()?.Value<string>("id");
+            if (!string.IsNullOrEmpty(existing)) return existing;
+        }
+
         var body = JsonConvert.SerializeObject(new
         {
             name,

@@ -49,4 +49,6 @@ public sealed class OutboxItem
     public DateTimeOffset? PostedAt { get; set; }
     /// <summary>Public URL of the manual post, supplied by the operator on confirm.</summary>
     public string? PostUrl { get; set; }
+    /// <summary>True once the rendered media/text files have been FIFO-pruned. The row (caption, exportRef, status) is kept.</summary>
+    public bool MediaPruned { get; set; }
 }

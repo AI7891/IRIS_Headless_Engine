@@ -5,6 +5,7 @@
 #
 #  Usage:
 #    export IRIS_URL="https://YOUR-CODESPACE-5000.app.github.dev"
+#    export IRIS_KEY="..."   # the API key; sent as X-Iris-Key, never in a URL
 #    ./termux-status.sh
 #
 #  Tip: `pkg install jq` for the clean formatted view.
@@ -12,13 +13,18 @@
 set -u
 
 IRIS_URL="${IRIS_URL:-https://YOUR-CODESPACE-5000.app.github.dev}"
-fetch() { curl -fsS --max-time 15 "$IRIS_URL$1" 2>/dev/null; }
+IRIS_KEY="${IRIS_KEY:-}"
+fetch() { curl -fsS --max-time 15 -H "X-Iris-Key: $IRIS_KEY" "$IRIS_URL$1" 2>/dev/null; }
+
+if [ -z "$IRIS_KEY" ]; then
+  echo "!! IRIS_KEY is empty — requests will 401. Put IRIS_KEY=... in \$HOME/.iris/env (see docs/deploy-phone.md)." >&2
+fi
 
 echo "IRIS @ $IRIS_URL"
 echo "-------------------------------------------"
 
 if ! fetch /healthz >/dev/null; then
-  echo "health   : DOWN  (codespace asleep/stopped, or IRIS_URL wrong)"
+  echo "health   : DOWN  (codespace asleep/stopped, IRIS_URL wrong, or IRIS_KEY rejected)"
   exit 1
 fi
 echo "health   : UP"
@@ -43,6 +49,9 @@ if command -v jq >/dev/null 2>&1; then
   echo "outbox   : ${pending:-?} pending · ${exported:-?} exported (awaiting post)"
   pickup=$(fetch '/api/outbox?status=Exported' | jq -r 'sort_by(.createdAt) | last | .exportRef // empty')
   [ -n "$pickup" ] && echo "pickup   : $pickup"
+  # Retention: how many items still have local media vs pruned (records are always kept).
+  fetch '/api/outbox?limit=1000' | jq -r '
+    "media    : \([.[] | select(.mediaPruned | not)] | length) live · \([.[] | select(.mediaPruned)] | length) pruned"'
 
   fetch /api/monetization/summary | jq -r '
     "revenue  : €\(.totalRevenueEur)   joins:\(.totalJoins)   clicks:\(.totalClicks)",

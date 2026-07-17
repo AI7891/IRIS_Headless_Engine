@@ -15,7 +15,8 @@ public sealed class IrisSettings
     // QUARANTINED: only consulted by the retired auto-publish path (DailyPostJob).
     // The outbox schedule is driven by OutboxSettings.PackagesPerRun instead.
     public int MaxPostsPerDayPerPlatform { get; set; } = 2;
-    public string HeartbeatSecret { get; set; } = "change-me-in-env";
+    // HeartbeatSecret was removed: it was read by nothing, and dead security config
+    // lies. The API is protected by Security:ApiKey (IRIS_API_KEY env var) instead.
 }
 
 public sealed class SocialsSettings

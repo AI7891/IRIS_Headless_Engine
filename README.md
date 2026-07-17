@@ -2,14 +2,14 @@
 
 Headless C# content factory for **Instagram, Facebook, TikTok, YouTube**, scored and curated by the **IRIS Method engine** (Identify / Reprogram / Integrate / Stabilise), driving traffic to your Linktree → Skool funnel — with a **human-in-the-loop outbox** instead of automated API posting.
 
-**Stack**: ASP.NET Core 8 · Quartz scheduler · SQLite (zero-budget) · ImageSharp + QuestPDF + FFmpeg (Canva-replacement) · Google Drive pickup · Termux on Android for ops · GitHub Codespaces for compute.
+**Stack**: ASP.NET Core 8 · Quartz scheduler · SQLite (zero-budget) · ImageSharp + QuestPDF + FFmpeg (Canva-replacement) · git-branch phone pickup + Termux notifier · GitHub Codespaces for compute.
 
 > **⚠️ Strategic pivot (2026-07): automated cross-posting is retired.** Unattended
 > API posting through unverified apps risks platform flagging/account bans, and
 > storing long-lived social OAuth tokens adds EU GDPR/cybersecurity surface. IRIS
 > now renders one platform-formatted package per day into an **outbox** (SQLite +
-> Google Drive) and the operator posts manually from the phone. The provider code
-> still exists, quarantined behind `Features:AutoPublish` (default `false`).
+> a git pickup branch) and the operator posts manually from the phone. The provider
+> code still exists, quarantined behind `Features:AutoPublish` (default `false`).
 > **Read [docs/headless-outbox.md](docs/headless-outbox.md) for the full workflow.**
 
 ---
@@ -21,7 +21,7 @@ Headless C# content factory for **Instagram, Facebook, TikTok, YouTube**, scored
 The factory is purpose-built for this:
 - 30 high-converting IRIS hooks pre-loaded (sourced from your project bible)
 - Auto-curation: top hooks scored by pillar fit + platform fit + time fit + conversion potential
-- Daily outbox package: one variant per platform — correct dimensions, caption limits, hashtag counts — media + caption text + `manifest.json`, exported to Google Drive
+- Daily outbox package: one variant per platform — correct dimensions, caption limits, hashtag counts — media + caption text + `manifest.json`, pushed to a git pickup branch (opens in the GitHub mobile app)
 - Auto-media: `ContentRenderer` generates the PNG per platform ($0); TikTok/YouTube get ImageSharp still → ffmpeg → mp4
 - Auto-UTM: every caption embeds `?utm_campaign={hook_id}&utm_content={pillar}` so revenue per hook is tracked even though posting is manual
 - Operator confirms each post via one endpoint; monetization tracking is unchanged
@@ -62,14 +62,25 @@ dotnet run
 ```
 Codespaces auto-forwards port 5000. Open the **Ports** tab → port 5000 → "Open in browser".
 
-### 1.6 Health check
-- `GET /healthz` → `{"status":"ok",...}`
+### 1.6 Secure it, then health check
+Every endpoint (including `/healthz`) requires the `X-Iris-Key` header; the app
+refuses to start without an `IRIS_API_KEY` Codespaces secret. Set that up **before**
+making the port public — see [docs/deploy-phone.md](docs/deploy-phone.md) →
+*Securing the deployment*.
+- `GET /healthz` → 401 bare, `{"status":"ok",...}` with the header
 - `GET /readyz` → 200 if DB is reachable
 - `GET /api/outbox` → today's package status (Pending/Exported/Posted)
 
-### 1.7 Google Drive pickup (recommended)
-Follow [docs/headless-outbox.md](docs/headless-outbox.md) → *Google Drive setup* to
-wire the service-account export. Without it, packages land in `output/outbox/`.
+### 1.7 Phone pickup (default: git branch)
+Out of the box, each package is pushed to the `outbox` branch of this repo (ambient
+Codespaces credentials, zero cost) and you open it in the GitHub mobile app. Run
+`scripts/termux-outbox-notify.sh` so your phone pings when a package is ready.
+**Recommended:** set `Outbox:Git:Repository` to a dedicated private repo (e.g.
+`you/IRIS_Outbox`) so the media never bloats clones of the code repo. Media is
+FIFO-pruned automatically (rows kept). See
+[docs/headless-outbox.md](docs/headless-outbox.md) → *Delivery* and *Retention*.
+(Google Drive is available too, but only with a paid Workspace **Shared Drive** — a
+personal Google account fails with `403 storageQuotaExceeded`.)
 
 ---
 
@@ -227,7 +238,7 @@ When the queue is empty, the top-scored hooks are auto-curated at 09:00 UTC dail
 | 7 | Last call for challenge + 15-min IG Live |
 | 8–14 | Challenge runs inside Skool · daily post · document breakthroughs |
 
-The DailyOutboxJob at 09:00 UTC packages the day's top hook(s) for all platforms (`Outbox:PackagesPerRun`, default 1); you post them from the Drive folder. For day-specific content, edit the hook `score` field in `hooks.json` (higher = picked first).
+The DailyOutboxJob at 09:00 UTC packages the day's top hook(s) for all platforms (`Outbox:PackagesPerRun`, default 1); you pick them up from the `outbox` git branch (or Drive). For day-specific content, edit the hook `score` field in `hooks.json` (higher = picked first).
 
 ---
 
@@ -282,7 +293,7 @@ Create Android home screen shortcuts for these endpoints (use **HTTP Shortcuts**
 3. **Outbox status** → `GET /api/outbox?status=exported`
 4. **Build today's package** → `POST /api/outbox/build`
 5. **Today's conversions** → `GET /api/monetization/conversions?limit=10`
-6. **Google Drive** → open the shared `IRIS Outbox` folder (grab media + captions)
+6. **Pickup** → tap the Termux "package ready" notification → GitHub app opens the `outbox` branch folder
 
 ---
 
@@ -312,7 +323,8 @@ inner-shift-lab/
     ├── InnerShiftLab.Outbox/           # human-in-the-loop outbox
     │   ├── PlatformFormatter.cs        #   per-platform dims/captions/hashtags
     │   ├── OutboxPackageBuilder.cs     #   media + captions + manifest.json
-    │   ├── PackageExporters.cs         #   Google Drive (service acct) / local
+    │   ├── GitOutboxExporter.cs        #   git orphan-branch pickup (default)
+    │   ├── PackageExporters.cs         #   Google Drive (Workspace) / local
     │   ├── OutboxService.cs            #   daily cycle + confirm
     │   └── OutboxSettings.cs
     ├── InnerShiftLab.Auth/             # QUARANTINED (Features:AutoPublish)
@@ -332,7 +344,7 @@ inner-shift-lab/
 
 ## 13. First-7-days revenue checklist
 
-- [ ] Day 1: Deploy to Codespaces, Google Drive pickup folder wired
+- [ ] Day 1: Deploy to Codespaces, git `outbox` pickup branch + Termux notifier wired
 - [ ] Day 2: First outbox package posted manually to all 4 platforms, links go live
 - [ ] Day 3: Linktree has UTMs working, first clicks tracked
 - [ ] Day 4: First Skool free signups

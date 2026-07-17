@@ -92,6 +92,43 @@ Add these as Android home screen shortcuts (use **HTTP Shortcuts** app or Chrome
 6. **Re-auth TikTok** → `GET /auth/tiktok/login`
 7. **Re-auth YouTube** → `GET /auth/youtube/login`
 
+## Securing the deployment
+
+The phone workflow needs port 5000 **public**, which puts the API on the open
+internet. Do these steps **in this order** — the port goes public last.
+
+1. **Generate a key** (anywhere with openssl):
+   ```bash
+   openssl rand -base64 32
+   ```
+2. **Store it as a Codespaces secret** named `IRIS_API_KEY`
+   (repo **Settings → Secrets and variables → Codespaces**). It is injected into the
+   Codespace as an environment variable and never touches the repo — which matters
+   because this repo is public. The app **refuses to start** without it.
+3. **Put the same value on the phone**, in one operator-owned file outside any repo:
+   ```bash
+   mkdir -p ~/.iris && echo 'IRIS_KEY=<paste the key>' > ~/.iris/env && chmod 600 ~/.iris/env
+   ```
+   `termux-boot-start.sh` sources this file; all three scripts then send it as the
+   `X-Iris-Key` header on every request.
+4. **Only now** make the port public:
+   ```bash
+   gh codespace ports visibility 5000:public
+   ```
+   This is safe *only after* steps 1–3: every endpoint now requires the key, floods
+   are rate-limited, and Swagger is not even mapped.
+5. **Verify** before doing anything else:
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}' $IRIS_URL/healthz                        # → 401
+   curl -s -o /dev/null -w '%{http_code}' -H "X-Iris-Key: $IRIS_KEY" $IRIS_URL/healthz  # → 200
+   ```
+   **If the first call returns 200, stop and fix it before anything else.**
+6. Two paths are deliberately exempt from the key, because third parties cannot send
+   our header — each is protected by its own mechanism and a tighter 20/min rate
+   limit: `/webhook/skool` (HMAC shared secret → `SKOOL_WEBHOOK_SECRET`) and
+   `/auth/meta/webhook` (Meta signature + verify token; only mapped when the
+   quarantined `Features:AutoPublish` is on).
+
 ## Network considerations
 
 | Network | Works? |
@@ -106,15 +143,16 @@ Add these as Android home screen shortcuts (use **HTTP Shortcuts** app or Chrome
 
 - [ ] Termux installed + SSH key generated (`ssh-keygen`)
 - [ ] GitHub SSH key added (`Settings → SSH and GPG keys`)
+- [ ] `IRIS_API_KEY` Codespaces secret set (see *Securing the deployment*)
 - [ ] Codespace created, port 5000 forwarded
 - [ ] `dotnet --version` returns 8.x in Codespaces terminal
-- [ ] `appsettings.json` filled with App ID/Secrets
-- [ ] `dotnet run` in `src/` works
-- [ ] All 3 OAuth flows completed (Meta, TikTok, YouTube)
-- [ ] `GET /api/providers/status` shows all 3 as `"valid"`
-- [ ] Tasker profile created and tested
-- [ ] First 3 auto-posts visible in `GET /api/iris/queue`
+- [ ] `dotnet run` in `src/` works (refuses to start = key missing — that's correct)
+- [ ] `~/.iris/env` on the phone holds `IRIS_KEY=…`
+- [ ] Port made public **after** the key steps; `/healthz` → 401 bare, 200 with header
+- [ ] Heartbeat + outbox notifier running (Termux:Boot)
+- [ ] `POST /api/outbox/build` lands the `outbox` branch in `IRIS_Outbox`
 - [ ] Phone shortcuts added to home screen
+- [ ] (Quarantined, only if `Features:AutoPublish=true`: OAuth flows + `GET /api/providers/status`)
 
 ## Time investment
 

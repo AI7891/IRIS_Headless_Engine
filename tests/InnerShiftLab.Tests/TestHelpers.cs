@@ -115,4 +115,26 @@ public sealed class FakeRepository : IRepository
         item.Status = OutboxStatus.Skipped;
         return Task.FromResult(true);
     }
+
+    public Task<int> MarkOutboxMediaPrunedAsync(string packageId)
+    {
+        var items = Outbox.Where(o => o.PackageId == packageId).ToList();
+        foreach (var o in items) o.MediaPruned = true;
+        return Task.FromResult(items.Count);
+    }
+
+    public Task<IReadOnlyList<string>> GetPrunablePackageIdsAsync(bool keepUnposted, DateTimeOffset olderThanUtc, int limit = 500)
+    {
+        IReadOnlyList<string> ids = Outbox
+            .GroupBy(o => o.PackageId)
+            .Where(g => g.All(o => !o.MediaPruned) && (
+                g.All(o => o.Status is OutboxStatus.Posted or OutboxStatus.Skipped)
+                || !keepUnposted
+                || g.Min(o => o.CreatedAt) < olderThanUtc))
+            .OrderBy(g => g.Min(o => o.CreatedAt))
+            .Select(g => g.Key)
+            .Take(limit)
+            .ToList();
+        return Task.FromResult(ids);
+    }
 }

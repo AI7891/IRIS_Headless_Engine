@@ -10,5 +10,12 @@
   },
   "onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core",
   "postCreateCommand": "dotnet build src/InnerShiftLab.csproj -c Release",
-  "postStartCommand": "bash -lc 'mkdir -p data && nohup dotnet run --project src -c Release > data/iris-run.log 2>&1 & echo \"IRIS auto-started on port 5000\"'"
+  "postStartCommand": "bash -lc 'mkdir -p data && nohup dotnet run --project src -c Release > data/iris-run.log 2>&1 & echo \"IRIS auto-started on port 5000\"'",
+  "customizations": {
+    "codespaces": {
+      "repositories": {
+        "AI7891/IRIS_Outbox": { "permissions": { "contents": "write" } }
+      }
+    }
+  }
 }

@@ -99,17 +99,18 @@ token, remove the app at https://myaccount.google.com/permissions and log in aga
 
 | Field | What to put |
 |---|---|
-| `Iris:HeartbeatSecret` | Any long random string (used to guard the heartbeat). Prefer setting it via env var `Iris__HeartbeatSecret` rather than committing it. |
-| `Monetization:SkoolWebhookSecret` | The signing secret from your Skool webhook config (HMAC-SHA256 of the body → `x-skool-signature`). |
+| `Security:ApiKey` | **The API key that protects every endpoint.** Never in the file — set the `IRIS_API_KEY` env var (Codespaces secret). Generate: `openssl rand -base64 32`. |
+| `Monetization:SkoolWebhookSecret` | The signing secret from your Skool webhook config (HMAC-SHA256 of the body → `x-skool-signature`). Set via `SKOOL_WEBHOOK_SECRET`. |
+| `Monetization:MetaAppSecret` | Meta app secret for webhook signatures (quarantined pipeline). Set via `META_APP_SECRET`. |
 
-**Never commit real secrets.** Any config key can be overridden by an environment
-variable using `__` (double underscore) for nesting, which takes precedence over
-`appsettings.json`. Examples:
+**Never commit real secrets — this repo is public.** The short env vars above win over
+any config value; any other config key can be overridden with `__` (double underscore)
+nesting, which takes precedence over `appsettings.json`. Examples:
 
 ```bash
+export IRIS_API_KEY="$(openssl rand -base64 32)"
+export SKOOL_WEBHOOK_SECRET="…"
 export Socials__Instagram__AppSecret="…"
-export Monetization__SkoolWebhookSecret="…"
-export Iris__HeartbeatSecret="$(openssl rand -hex 32)"
 ```
 
 ---
