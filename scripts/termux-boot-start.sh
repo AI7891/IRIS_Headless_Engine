@@ -21,6 +21,14 @@ HEARTBEAT="$HOME/iris/termux-heartbeat.sh"
 NOTIFIER="$HOME/iris/termux-outbox-notify.sh"
 # -----------------------------------------------------------------------------
 
+# Secrets (IRIS_KEY=...) live in one operator-owned file outside the repo, not
+# pasted into three scripts. Create it with: echo 'IRIS_KEY=...' > ~/.iris/env
+if [ -f "$HOME/.iris/env" ]; then
+  set -a
+  . "$HOME/.iris/env"
+  set +a
+fi
+
 termux-wake-lock 2>/dev/null || true
 
 if [ ! -x "$HEARTBEAT" ]; then

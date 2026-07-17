@@ -5,6 +5,7 @@
 #
 #  Usage:
 #    export IRIS_URL="https://YOUR-CODESPACE-5000.app.github.dev"
+#    export IRIS_KEY="..."   # the API key; sent as X-Iris-Key, never in a URL
 #    ./termux-status.sh
 #
 #  Tip: `pkg install jq` for the clean formatted view.
@@ -12,13 +13,18 @@
 set -u
 
 IRIS_URL="${IRIS_URL:-https://YOUR-CODESPACE-5000.app.github.dev}"
-fetch() { curl -fsS --max-time 15 "$IRIS_URL$1" 2>/dev/null; }
+IRIS_KEY="${IRIS_KEY:-}"
+fetch() { curl -fsS --max-time 15 -H "X-Iris-Key: $IRIS_KEY" "$IRIS_URL$1" 2>/dev/null; }
+
+if [ -z "$IRIS_KEY" ]; then
+  echo "!! IRIS_KEY is empty — requests will 401. Put IRIS_KEY=... in \$HOME/.iris/env (see docs/deploy-phone.md)." >&2
+fi
 
 echo "IRIS @ $IRIS_URL"
 echo "-------------------------------------------"
 
 if ! fetch /healthz >/dev/null; then
-  echo "health   : DOWN  (codespace asleep/stopped, or IRIS_URL wrong)"
+  echo "health   : DOWN  (codespace asleep/stopped, IRIS_URL wrong, or IRIS_KEY rejected)"
   exit 1
 fi
 echo "health   : UP"
