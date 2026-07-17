@@ -62,8 +62,12 @@ dotnet run
 ```
 Codespaces auto-forwards port 5000. Open the **Ports** tab → port 5000 → "Open in browser".
 
-### 1.6 Health check
-- `GET /healthz` → `{"status":"ok",...}`
+### 1.6 Secure it, then health check
+Every endpoint (including `/healthz`) requires the `X-Iris-Key` header; the app
+refuses to start without an `IRIS_API_KEY` Codespaces secret. Set that up **before**
+making the port public — see [docs/deploy-phone.md](docs/deploy-phone.md) →
+*Securing the deployment*.
+- `GET /healthz` → 401 bare, `{"status":"ok",...}` with the header
 - `GET /readyz` → 200 if DB is reachable
 - `GET /api/outbox` → today's package status (Pending/Exported/Posted)
 
