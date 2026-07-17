@@ -74,10 +74,6 @@ try
         o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     });
 
-    // Swagger/OpenAPI — required by app.UseSwagger()/UseSwaggerUI() below and the "/" landing page.
-    builder.Services.AddEndpointsApiExplorer();
-    builder.Services.AddSwaggerGen();
-
     // Don't advertise the server implementation.
     builder.WebHost.ConfigureKestrel(o => o.AddServerHeader = false);
 
@@ -159,6 +155,15 @@ try
     var securitySettings = builder.Configuration.GetSection("Security").Get<SecuritySettings>() ?? new SecuritySettings();
     SecuritySettings.Validate(securitySettings);
     builder.Services.AddSingleton(securitySettings);
+
+    // Swagger is a complete map of the API. Same structural instinct as the
+    // AutoPublish quarantine: on a deployed (key-required) instance we don't
+    // disable the dangerous thing — we don't build it. Local development only.
+    if (!securitySettings.RequireApiKey)
+    {
+        builder.Services.AddEndpointsApiExplorer();
+        builder.Services.AddSwaggerGen();
+    }
 
     // Webhook secrets are optional (the webhooks themselves are), so placeholders
     // warn rather than throw — but say exactly which env var fixes it.
@@ -647,9 +652,17 @@ try
         });
     }
 
-    app.MapGet("/", () => Results.Redirect("/swagger"));
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    if (!securitySettings.RequireApiKey)
+    {
+        app.MapGet("/", () => Results.Redirect("/swagger"));
+        app.UseSwagger();
+        app.UseSwaggerUI();
+        Log.Information("Swagger UI exposed at / (local development — RequireApiKey=false)");
+    }
+    else
+    {
+        Log.Information("Swagger not mapped (RequireApiKey=true) — an unmapped endpoint cannot leak");
+    }
 
     Log.Information("IRIS headless content factory starting on {Env} (AutoPublish={AutoPublish})",
         app.Environment.EnvironmentName, autoPublish);
