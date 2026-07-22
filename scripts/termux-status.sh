@@ -11,7 +11,7 @@
 # =============================================================================
 set -u
 
-IRIS_URL="${IRIS_URL:-https://YOUR-CODESPACE-5000.app.github.dev}"
+IRIS_URL="${IRIS_URL:-https://crispy-winner-9g6w6x5jqg5hpg5v-5000.app.github.dev}"
 fetch() { curl -fsS --max-time 15 "$IRIS_URL$1" 2>/dev/null; }
 
 echo "IRIS @ $IRIS_URL"
